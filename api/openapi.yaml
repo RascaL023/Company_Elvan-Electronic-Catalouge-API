@@ -1,0 +1,630 @@
+openapi: 3.1.0
+
+info:
+  title: Elvan Catalog API
+  version: 0.1.0
+  license:
+    name: Proprietary
+  description: |
+    Kontrak API katalog elektronik Elvan Electronic. Dokumen ini adalah sumber
+    kebenaran kontrak antara backend (Go) dan frontend (React).
+
+    Cakupan versi ini: **hanya jalur baca publik** (Fase 2). Endpoint tulis,
+    auth, dan media ditambahkan pada fase berikutnya.
+
+    Konvensi:
+    - JSON `camelCase`, waktu ISO-8601 UTC dengan milidetik (`.000Z`),
+      sama dengan `Date.prototype.toISOString()` di FE.
+    - Gambar disimpan sebagai **relative key** (tanpa slash di depan); FE yang
+      memetakannya ke URL CDN.
+    - `category` dan `brand` adalah **slug**, bukan id.
+    - `images` berbentuk array objek `{ key, fileId }`. Adapter FE memetakannya
+      ke kontrak domainnya (`images: string[]` + `imageFileIds: string[]`).
+    - Endpoint baca memakai `ETag` + `Cache-Control: public, max-age=60` dan
+      mendukung `If-None-Match` → `304 Not Modified`.
+
+servers:
+  - url: /
+    description: Satu domain, API di /api lewat reverse proxy (rencana produksi)
+  - url: http://localhost:8080
+    description: Development lokal
+
+# Semua endpoint pada fase ini publik. `security: []` menyatakan tidak ada
+# skema keamanan yang dibutuhkan; endpoint admin akan menambahkan `security`
+# sendiri pada Fase 4.
+security: []
+
+tags:
+  - name: Health
+    description: Liveness dan readiness
+  - name: Catalog
+    description: Proyeksi katalog untuk listing publik
+  - name: Products
+    description: Produk
+  - name: Categories
+    description: Kategori
+  - name: Brands
+    description: Brand
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      operationId: getLiveness
+      summary: Liveness probe
+      description: Mengembalikan 200 selama proses hidup. Tidak menyentuh database.
+      responses:
+        '200':
+          description: Proses hidup
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+
+  /readyz:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Readiness probe
+      description: Mem-ping PostgreSQL. Mengembalikan 503 bila database tidak dapat dihubungi.
+      responses:
+        '200':
+          description: Siap menerima trafik
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+        '503':
+          description: Belum siap (mis. database tidak dapat dihubungi)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: unavailable
+
+  /api/v1/catalog:
+    get:
+      tags: [Catalog]
+      operationId: getCatalog
+      summary: Seluruh proyeksi katalog
+      description: |
+        Proyeksi ringan seluruh katalog produk aktif, dipakai FE untuk
+        `ProductRepository.getAll()`. Cocok untuk dataset kecil; untuk dataset
+        besar gunakan `/api/v1/products` dengan pagination.
+      responses:
+        '200':
+          $ref: '#/components/responses/CatalogProductArray'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/products:
+    get:
+      tags: [Products]
+      operationId: listProducts
+      summary: Daftar produk (filter, sort, pencarian, pagination keyset)
+      description: |
+        Hasil dipaginasi dengan **keyset cursor**. `cursor` bersifat opaque:
+        kirim kembali nilai dari respons sebelumnya tanpa menafsirkannya.
+        Cursor yang `sort`-nya tidak cocok dengan permintaan ditolak dengan
+        `400 invalid_cursor`.
+      parameters:
+        - $ref: '#/components/parameters/Category'
+        - $ref: '#/components/parameters/Brand'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/IncludeInactive'
+      responses:
+        '200':
+          description: Satu halaman produk
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductList'
+              examples:
+                Halaman:
+                  value:
+                    products:
+                      - id: 018f2c6e-1f3a-7b2c-9d4e-5f60718293a4
+                        name: Sharp 24 Inch LED TV
+                        slug: sharp-24-inch-led-tv
+                        price: 1500000
+                        category: television
+                        brand: sharp
+                        thumbnail: assets/images/products/television/sharp-24.jpg
+                        rating: { rate: 4.5, count: 12 }
+                        isActive: true
+                        createdAt: '2026-10-01T03:00:00.000Z'
+                    hasMore: true
+                    cursor: eyJzIjoiZGVmYXVsdCIsImMiOiIyMDI2LTEwLTAxVDAzOjAwOjAwWiIsImkiOiIwMThmLi4uIn0
+                HalamanTerakhir:
+                  value:
+                    products: []
+                    hasMore: false
+                    cursor: null
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/products/{id}:
+    get:
+      tags: [Products]
+      operationId: getProduct
+      summary: Produk lengkap
+      description: |
+        Dipakai halaman detail dan form edit admin. `id` boleh berupa UUID
+        (format baru) **atau** id legacy Firestore: bila UUID tidak ditemukan,
+        server mencari lewat `legacy_id` sehingga URL lama tetap hidup.
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Produk lengkap
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+              examples:
+                Produk:
+                  value:
+                    id: 018f2c6e-1f3a-7b2c-9d4e-5f60718293a4
+                    name: Sharp 24 Inch LED TV
+                    slug: sharp-24-inch-led-tv
+                    price: 1500000
+                    description: Televisi LED 24 inci.
+                    category: television
+                    brand: sharp
+                    images:
+                      - key: assets/images/products/television/sharp-24.jpg
+                        fileId: 65a1b2c3d4e5f6a7b8c9d0e1
+                      - key: assets/images/products/television/sharp-24-side.jpg
+                        fileId: 65a1b2c3d4e5f6a7b8c9d0e2
+                    rating: { rate: 4.5, count: 12 }
+                    isActive: true
+                    createdAt: '2026-10-01T03:00:00.000Z'
+                    updatedAt: '2026-10-01T03:00:00.000Z'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/categories:
+    get:
+      tags: [Categories]
+      operationId: listCategories
+      summary: Daftar kategori
+      responses:
+        '200':
+          description: Seluruh kategori
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Category'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/categories/{id}:
+    get:
+      tags: [Categories]
+      operationId: getCategory
+      summary: Satu kategori
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Kategori
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/brands:
+    get:
+      tags: [Brands]
+      operationId: listBrands
+      summary: Daftar brand
+      responses:
+        '200':
+          description: Seluruh brand
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Brand'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/brands/{id}:
+    get:
+      tags: [Brands]
+      operationId: getBrand
+      summary: Satu brand
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: Brand
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Brand'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  schemas:
+    Rating:
+      type: object
+      required: [rate, count]
+      properties:
+        rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 5
+          description: Nilai rating rata-rata.
+        count:
+          type: integer
+          minimum: 0
+          description: Jumlah penilai.
+
+    Image:
+      type: object
+      required: [key, fileId]
+      properties:
+        key:
+          type: string
+          description: Relative key tanpa slash di depan, mis. `assets/images/products/television/x.jpg`.
+        fileId:
+          type: string
+          description: |-
+            Id berkas di provider (untuk penghapusan server-side). String
+            kosong untuk gambar lama tanpa file id.
+          example: 65a1b2c3d4e5f6a7b8c9d0e1
+
+    CatalogProduct:
+      type: object
+      description: Proyeksi ringan untuk listing (fe `CatalogProduct`).
+      required: [id, name, slug, price, category, brand, thumbnail, rating, isActive, createdAt]
+      properties:
+        id:
+          type: string
+          description: Id opaque yang dibuat server.
+        name: { type: string }
+        slug: { type: string }
+        price:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Satuan terkecil mata uang (Rupiah, bilangan bulat).
+        category:
+          type: string
+          description: Slug kategori.
+        brand:
+          type: string
+          description: Slug brand; string kosong bila produk tidak punya brand.
+        thumbnail:
+          type: string
+          description: Relative key gambar posisi 0; string kosong bila tidak ada gambar.
+        rating:
+          $ref: '#/components/schemas/Rating'
+        isActive: { type: boolean }
+        createdAt:
+          type: string
+          format: date-time
+
+    Product:
+      type: object
+      description: Produk lengkap (halaman detail/edit).
+      required: [id, name, slug, price, description, category, brand, images, rating, isActive, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        price:
+          type: integer
+          format: int64
+          minimum: 0
+        description: { type: string }
+        category:
+          type: string
+          description: Slug kategori.
+        brand:
+          type: string
+          description: Slug brand; string kosong bila tidak ada.
+        images:
+          type: array
+          description: Terurut; index 0 adalah thumbnail.
+          items:
+            $ref: '#/components/schemas/Image'
+        rating:
+          $ref: '#/components/schemas/Rating'
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ProductList:
+      type: object
+      description: Satu halaman daftar produk (fe `ProductListResult`).
+      required: [products, hasMore, cursor]
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogProduct'
+        hasMore:
+          type: boolean
+          description: True bila masih ada halaman berikutnya.
+        cursor:
+          type: [string, 'null']
+          description: |-
+            Token opaque untuk halaman berikutnya; `null` bila tidak ada.
+            Kirim kembali apa adanya sebagai parameter `cursor`.
+
+    Category:
+      type: object
+      required: [id, name, slug, description, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Brand:
+      type: object
+      required: [id, name, slug, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Error:
+      type: object
+      description: Envelope error untuk seluruh endpoint.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Kode error stabil yang bisa dicek program.
+              enum:
+                - validation_failed
+                - invalid_cursor
+                - unauthorized
+                - forbidden
+                - not_found
+                - conflict
+                - internal
+            message:
+              type: string
+              description: Pesan yang aman ditampilkan ke pengguna.
+            details:
+              type: array
+              description: Rincian per field; hanya untuk error validasi.
+              items:
+                type: object
+                required: [field, message]
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+
+  parameters:
+    PathID:
+      name: id
+      in: path
+      required: true
+      description: UUID produk/kategori/brand (atau id legacy Firestore untuk produk).
+      schema:
+        type: string
+
+    Category:
+      name: category
+      in: query
+      description: Filter berdasarkan slug kategori.
+      schema:
+        type: string
+      example: television
+
+    Brand:
+      name: brand
+      in: query
+      description: Filter berdasarkan slug brand.
+      schema:
+        type: string
+      example: sharp
+
+    Search:
+      name: search
+      in: query
+      description: Pencarian substring pada nama produk.
+      schema:
+        type: string
+        maxLength: 200
+      example: led 24
+
+    Sort:
+      name: sort
+      in: query
+      description: Urutan hasil. `default` = terbaru dulu.
+      schema:
+        type: string
+        enum: [default, price-asc, price-desc, rating-desc]
+        default: default
+
+    Limit:
+      name: limit
+      in: query
+      description: Jumlah maksimum item per halaman (dibatasi 100).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 24
+
+    Cursor:
+      name: cursor
+      in: query
+      description: |-
+        Token opaque dari respons sebelumnya. Jangan di-parse atau dibuat
+        sendiri. Harus berasal dari `sort` yang sama.
+      schema:
+        type: string
+
+    IncludeInactive:
+      name: includeInactive
+      in: query
+      description: |-
+        Menyertakan produk nonaktif. Hanya dihormati untuk admin
+        terautentikasi; diabaikan untuk pengunjung publik (selalu hanya produk
+        aktif).
+      schema:
+        type: boolean
+        default: false
+
+  headers:
+    ETag:
+      description: Validator konten respons. Kirim sebagai `If-None-Match` untuk mendapat `304`.
+      schema:
+        type: string
+      example: '"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"'
+    CacheControl:
+      schema:
+        type: string
+      example: public, max-age=60
+    RequestId:
+      description: Id request untuk penelusuran log.
+      schema:
+        type: string
+
+  responses:
+    CatalogProductArray:
+      description: Array proyeksi katalog
+      headers:
+        ETag:
+          $ref: '#/components/headers/ETag'
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/CatalogProduct'
+
+    NotModified:
+      description: Konten tidak berubah (If-None-Match cocok dengan ETag saat ini).
+      headers:
+        ETag:
+          $ref: '#/components/headers/ETag'
+
+    BadRequest:
+      description: |-
+        Permintaan tidak valid. `code` bernilai `validation_failed` (mis. `sort`
+        tidak dikenal, `limit` bukan bilangan) atau `invalid_cursor` (cursor
+        rusak atau berasal dari `sort` lain).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            Validasi:
+              value:
+                error:
+                  code: validation_failed
+                  message: Data tidak valid
+                  details:
+                    - field: sort
+                      message: 'nilai tidak didukung: bogus'
+            Cursor:
+              value:
+                error:
+                  code: invalid_cursor
+                  message: Cursor tidak valid
+                  details:
+                    - field: cursor
+                      message: cursor tidak valid
+
+    NotFound:
+      description: Data tidak ditemukan.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: not_found
+              message: Data tidak ditemukan
+
+    # Catatan: respons 401 (unauthorized), 403 (forbidden), dan 409 (conflict)
+    # ditambahkan pada Fase 4 bersama endpoint tulis/auth. Kode-nya sudah
+    # terdaftar di enum `Error.code`.
+    InternalError:
+      description: |-
+        Kesalahan internal. Detail sebenarnya hanya dicatat di log; klien tidak
+        pernah menerima pesan internal.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: internal
+              message: Terjadi kesalahan internal
