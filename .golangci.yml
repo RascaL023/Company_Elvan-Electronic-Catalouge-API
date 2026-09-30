@@ -1,0 +1,44 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # domain murni: hanya stdlib.
+        domain:
+          files:
+            - "**/internal/domain/**"
+          allow:
+            - "$gostd"
+
+        # application: hanya stdlib, domain, dan sesama paket application.
+        application:
+          files:
+            - "**/internal/application/**"
+          allow:
+            - "$gostd"
+            - "elvan-catalog-api/internal/domain"
+            - "elvan-catalog-api/internal/application"
+
+        # adapter/in tidak boleh bergantung pada adapter/out.
+        adapter-in-isolation:
+          files:
+            - "**/internal/adapter/in/**"
+          deny:
+            - pkg: "elvan-catalog-api/internal/adapter/out"
+              desc: "adapter/in tidak boleh meng-import adapter/out"
+
+        # adapter/out tidak boleh bergantung pada adapter/in.
+        adapter-out-isolation:
+          files:
+            - "**/internal/adapter/out/**"
+          deny:
+            - pkg: "elvan-catalog-api/internal/adapter/in"
+              desc: "adapter/out tidak boleh meng-import adapter/in"
+
+formatters:
+  enable:
+    - gofmt
