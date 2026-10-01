@@ -402,10 +402,38 @@ func TestHealthAndReady(t *testing.T) {
 	}
 }
 
-func TestPanicReturns500(t *testing.T) {
+func TestPanicReturnsJSON500(t *testing.T) {
 	cat := &fakeCatalog{panicOnListAll: true}
 	rec := do(t, newTestRouter(cat, &fakeTaxonomy{}, CORSConfig{}), http.MethodGet, "/api/v1/catalog", nil)
+
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, ingin 500", rec.Code)
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, ingin application/json", ct)
+	}
+
+	var body errorBody
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("body bukan JSON valid: %v\nraw = %q", err, rec.Body.String())
+	}
+	if body.Error.Code != codeInternal {
+		t.Errorf("error.code = %q, ingin %q", body.Error.Code, codeInternal)
+	}
+	if body.Error.Message == "" {
+		t.Error("error.message kosong")
+	}
+
+	// Bandingkan dengan envelope error normal (500 lewat writeError).
+	wantRec := httptest.NewRecorder()
+	writeError(wantRec, discardLogger(), httptest.NewRequest(http.MethodGet, "/", nil), errors.New("internal-for-compare"))
+	var want errorBody
+	if err := json.NewDecoder(wantRec.Body).Decode(&want); err != nil {
+		t.Fatalf("decode envelope normal: %v", err)
+	}
+	if body.Error.Code != want.Error.Code || body.Error.Message != want.Error.Message {
+		t.Errorf("envelope panic = %+v, ingin sama dengan writeError = %+v", body.Error, want.Error)
 	}
 }

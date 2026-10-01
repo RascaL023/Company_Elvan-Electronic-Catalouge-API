@@ -41,7 +41,8 @@ func newRequestID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// recoverer menangkap panic agar server tidak mati dan klien mendapat 500 JSON.
+// recoverer menangkap panic agar server tidak mati dan klien mendapat 500 JSON
+// dengan envelope yang sama seperti writeError (code=internal).
 func recoverer(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,9 +56,10 @@ func recoverer(log *slog.Logger) func(http.Handler) http.Handler {
 							"path", r.URL.Path,
 						)
 					}
-					w.Header().Set("Content-Type", "application/json; charset=utf-8")
-					w.WriteHeader(http.StatusInternalServerError)
-					_, _ = w.Write([]byte(`{"error":{"code":"internal","message":"Terjadi kesalahan internal"}}`))
+					writeJSONStatus(w, http.StatusInternalServerError, errorBody{Error: errorDetail{
+						Code:    codeInternal,
+						Message: "Terjadi kesalahan internal",
+					}})
 				}
 			}()
 			next.ServeHTTP(w, r)
