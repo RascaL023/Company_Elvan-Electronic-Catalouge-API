@@ -72,9 +72,10 @@
 > lulus; `gofmt`/`vet`/`build`/`test`/`lint` hijau.
 >
 > **Test integrasi (2026-10-01):** `postgres_integration_test.go` berjalan
-> terhadap PostgreSQL 18.1 nyata via `DATABASE_URL`, dan setiap test dijalankan
+> terhadap PostgreSQL 18.1 nyata via `TEST_DATABASE_URL` (fallback
+> `DATABASE_URL` untuk kenyamanan lokal), dan setiap test dijalankan
 > di dalam transaksi yang **selalu di-rollback** sehingga DB tidak berubah
-> (diverifikasi: 0 baris sisa). Tanpa `DATABASE_URL`, test ini di-skip. Hasil
+> (diverifikasi: 0 baris sisa). Tanpa DSN, test ini di-skip. Hasil
 > awalnya menemukan satu bug nyata: `ON DELETE RESTRICT` menghasilkan SQLSTATE
 > **23001** (bukan 23503), sehingga hapus kategori/brand terpakai tidak menjadi
 > `ErrConflict`. Kini 23001 dipetakan ke `ErrConflict` (sesuai keputusan V4).
@@ -82,6 +83,12 @@
 > fallback `legacy_id`, update ganti gambar, delete mengembalikan gambar),
 > RESTRICT saat kategori terpakai, keyset pagination 4 urutan + `includeInactive`
 > + cursor rusak/sort mismatch, dan proyeksi `ListAll`.
+>
+> **Test integrasi di CI (2026-10-01, issue #5):** `.github/workflows/ci.yml`
+> kini menyediakan **service container `postgres:18-alpine`**, menjalankan
+> migrasi goose pada DSN-nya, dan menyetel `TEST_DATABASE_URL` sehingga test
+> integrasi benar-benar jalan di tiap PR (sebelumnya selalu di-skip karena
+> tidak ada DB). `make test-integration` ditambahkan untuk menjalankannya lokal.
 >
 > **Status Fase 2b (2026-10-01):** adapter HTTP baca selesai — router `net/http`
 > `ServeMux` (pola method+path), middleware `recover → request id → access log → CORS`, 
@@ -324,6 +331,7 @@ Ditegakkan `depguard` (lihat Fase 0).
 - [x] Perbarui `.gitignore`: tambah `bin/`, `.env`, `*.out`, `coverage.*`.
 - [x] `cmd/api/main.go`: baca config → logger → pool → wiring → `ListenAndServe` → `/healthz` (+ read path); graceful shutdown (`SIGTERM`/`SIGINT`).
 - [x] `.github/workflows/ci.yml`: `go vet` → `golangci-lint` → `go test ./...` → `go build`. **Belum:** cek `sqlc generate` tidak menghasilkan diff.
+  - [x] Service container PostgreSQL + migrasi goose + `TEST_DATABASE_URL` agar test integrasi ikut jalan (issue #5).
 - [x] `README.md`: cara setup, tool yang dibutuhkan, Makefile.
 
 **Kriteria lulus:** `go build ./...` OK; `make lint` hijau; `make run` menyajikan `/healthz` → `200`. ✅
@@ -356,7 +364,7 @@ Ditegakkan `depguard` (lihat Fase 0).
   - [x] Terjemahkan error Postgres `23505` → `ErrConflict`, `23503` → `ErrConflict` (+ `23001` RESTRICT → `ErrConflict`).
 - [x] Unit test domain (murni): validasi produk, patch, rating.
 - [ ] Test integrasi Postgres pakai `testcontainers-go` (butuh Docker) untuk mapper + constraint.
-  > **Alternatif sudah jalan:** `postgres_integration_test.go` terhadap PostgreSQL nyata via `DATABASE_URL` + transaksi rollback (lihat status Fase 2 di atas). `testcontainers-go` belum masuk `go.mod`.
+  > **Alternatif sudah jalan:** `postgres_integration_test.go` terhadap PostgreSQL nyata via `TEST_DATABASE_URL` + transaksi rollback (lihat status Fase 2 di atas), dan sejak issue #5 ikut berjalan di CI lewat service container. `testcontainers-go` belum masuk `go.mod` (Docker daemon lokal sedang mati).
 
 **Kriteria lulus:** `goose up/down` bersih; `make sqlc` idempoten (tanpa diff); `go test ./internal/domain/...` hijau. ✅
 
@@ -527,7 +535,7 @@ Ditegakkan `depguard` (lihat Fase 0).
 
 Pipeline CI minimum:
 ```
-go vet → golangci-lint → go test ./... → validasi OpenAPI → sqlc generate tidak menghasilkan diff
+service Postgres 18 + migrasi goose → go vet → golangci-lint → go test ./... (unit + integrasi via TEST_DATABASE_URL) → validasi OpenAPI → sqlc generate tidak menghasilkan diff
 ```
 
 ---

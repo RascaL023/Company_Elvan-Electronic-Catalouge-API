@@ -4,8 +4,10 @@
 GO             ?= go
 BINARY         ?= bin/api
 MIGRATIONS_DIR ?= db/migrations
+# DSN test integrasi; test yang di-skip bila kosong memakai fallback DATABASE_URL.
+TEST_DATABASE_URL ?=
 
-.PHONY: help run build test vet lint fmt tidy sqlc migrate-status migrate-up migrate-down migrate-create
+.PHONY: help run build test test-integration vet lint fmt tidy sqlc migrate-status migrate-up migrate-down migrate-create
 
 help: ## Tampilkan daftar target
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -18,6 +20,10 @@ build: ## Build binary ke bin/api
 
 test: ## Jalankan semua test
 	$(GO) test ./...
+
+test-integration: ## Test integrasi Postgres (butuh TEST_DATABASE_URL; fallback DATABASE_URL)
+	@test -n "$(TEST_DATABASE_URL)" || { echo "TEST_DATABASE_URL belum diisi"; exit 1; }
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" $(GO) test ./internal/adapter/out/postgres/ -run Integration -v
 
 vet: ## go vet
 	$(GO) vet ./...
