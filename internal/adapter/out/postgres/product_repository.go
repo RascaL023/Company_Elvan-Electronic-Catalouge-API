@@ -147,15 +147,17 @@ func (r *ProductRepository) Create(ctx context.Context, p domain.Product) (*doma
 }
 
 // Update mengubah sebagian produk. Bila patch.Images tidak nil, seluruh gambar
-// diganti. Use case bertanggung jawab menghitung fileId yang terlepas (dari
-// gambar sebelum update) untuk dibersihkan di provider.
+// diganti. Bila patch.Rating tidak nil, rating_rate dan rating_count ikut
+// di-update; jika nil, nilai existing tidak berubah. Use case bertanggung
+// jawab menghitung fileId yang terlepas (dari gambar sebelum update) untuk
+// dibersihkan di provider.
 func (r *ProductRepository) Update(ctx context.Context, id string, patch domain.ProductPatch) (*domain.Product, error) {
 	uid, err := parseID(id)
 	if err != nil {
 		return nil, err
 	}
 
-	row, err := querier(ctx, r.pool).UpdateProduct(ctx, sqlcgen.UpdateProductParams{
+	params := sqlcgen.UpdateProductParams{
 		Name:        patch.Name,
 		Slug:        patch.Slug,
 		Price:       patch.Price,
@@ -164,7 +166,14 @@ func (r *ProductRepository) Update(ctx context.Context, id string, patch domain.
 		Brand:       patch.Brand,
 		IsActive:    patch.IsActive,
 		ID:          uid,
-	})
+	}
+	if patch.Rating != nil {
+		params.RatingRate = numericFromFloat(patch.Rating.Rate)
+		count := int32(patch.Rating.Count)
+		params.RatingCount = &count
+	}
+
+	row, err := querier(ctx, r.pool).UpdateProduct(ctx, params)
 	if err != nil {
 		return nil, MapError(err)
 	}
@@ -438,10 +447,15 @@ func cursorRating(cur *cursorPayload) (pgtype.Numeric, *int32) {
 	if cur == nil || cur.RatingRate == nil {
 		return pgtype.Numeric{}, nil
 	}
+	return numericFromFloat(*cur.RatingRate), cur.RatingCount
+}
+
+// numericFromFloat memetakan float ke pgtype.Numeric dengan satu desimal
+// (skema rating_rate numeric(2,1)).
+func numericFromFloat(v float64) pgtype.Numeric {
 	var n pgtype.Numeric
-	// rating_rate numeric(2,1): selalu 0..5 dengan satu desimal.
-	_ = n.Scan(strconv.FormatFloat(*cur.RatingRate, 'f', 1, 64))
-	return n, cur.RatingCount
+	_ = n.Scan(strconv.FormatFloat(v, 'f', 1, 64))
+	return n
 }
 
 // --- bantuan umum -----------------------------------------------------------
