@@ -3,8 +3,8 @@
 -- aturan bahwa string kosong tidak diizinkan. NULL tetap sah untuk produk/
 -- kategori/brand yang dibuat native tanpa leluhur Firestore.
 --
--- Trimming hanya untuk membersihkan nilai spasi; kolom sudah UNIQUE sehingga
--- duplikasi tak mungkin ada sebelum CHECK dipasang.
+-- Nilai selain string kosong diterima apa adanya: migration ini tidak
+-- melakukan trimming atau normalisasi (mis. ' abc ' tetap sah).
 
 ALTER TABLE products
   DROP CONSTRAINT IF EXISTS products_legacy_id_nonempty,

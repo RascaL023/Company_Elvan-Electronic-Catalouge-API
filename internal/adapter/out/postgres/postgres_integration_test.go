@@ -262,9 +262,9 @@ func TestIntegrationProductLifecycle(t *testing.T) {
 
 // TestIntegrationLegacyIDSemantics mengunci semantik legacy id (issue #6):
 // read-only fallback yang selalu menjawab id canonical UUID, tidak pernah
-// diekspos kembali, dan ditolak sebagai nilai kosong/duplikat di database.
-// Kasus yang memicu error SQL sengaja ditaruh di transaksi terpisah — satu
-// error membatalkan seluruh transaksi Postgres.
+// diekspos kembali (termasuk di log), dan ditolak sebagai nilai
+// kosong/duplikat di database. Kasus yang memicu error SQL sengaja ditaruh di
+// transaksi terpisah — satu error membatalkan seluruh transaksi Postgres.
 func TestIntegrationLegacyIDSemantics(t *testing.T) {
 	pool := testPool(t)
 	cats := NewCategoryRepository(pool)
@@ -316,15 +316,31 @@ func TestIntegrationLegacyIDSemantics(t *testing.T) {
 		}
 
 		// 3) Pemakaian fallback legacy tercatat di log (dasar keputusan
-		// penghapusan fallback di kemudian hari).
-		if logs := logBuf.String(); !strings.Contains(logs, legacy) || !strings.Contains(logs, created.ID) {
+		// penghapusan fallback di kemudian hari), tetapi id legacy mentahnya
+		// tidak boleh ikut tertulis.
+		logs := logBuf.String()
+		if !strings.Contains(logs, created.ID) {
 			t.Errorf("fallback legacy tidak tercatat di log:\n%s", logs)
 		}
+		if strings.Contains(logs, legacy) {
+			t.Errorf("log tidak boleh memuat id legacy mentah:\n%s", logs)
+		}
 
-		// 4) legacy id hanya untuk baca: update menolaknya. Penegakan UUID-only
-		// PATCH/DELETE di level API admin ditegakkan saat write path dibangun.
+		// 4) legacy id hanya untuk baca: update & delete menolaknya, dan tidak
+		// ada data yang terhapus. Penegakan UUID-only di level API admin
+		// ditegakkan saat write path dibangun.
 		if _, err := repo.Update(ctx, legacy, domain.ProductPatch{}); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("Update via legacy id seharusnya ErrNotFound, dapat %v", err)
+		}
+		if removed, err := repo.Delete(ctx, legacy); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("Delete via legacy id seharusnya ErrNotFound, dapat %v", err)
+		} else if len(removed) != 0 {
+			t.Errorf("Delete via legacy id mengembalikan gambar %+v, ingin kosong", removed)
+		}
+		if still, err := repo.GetByID(ctx, created.ID); err != nil {
+			t.Errorf("produk hilang setelah Delete(legacy): %v", err)
+		} else if still.ID != created.ID {
+			t.Errorf("produk setelah Delete(legacy) = %q, ingin %q", still.ID, created.ID)
 		}
 
 		// 5) id tidak dikenal (bukan UUID, bukan legacy) → tidak ditemukan.
