@@ -45,6 +45,9 @@ type ProductRepository interface {
 type CategoryRepository interface {
 	List(ctx context.Context) ([]domain.Category, error)
 	GetByID(ctx context.Context, id string) (*domain.Category, error)
+	// GetBySlug dipakai validasi referensi sebelum menulis produk (issue #3).
+	// Slug yang tidak ada dikembalikan sebagai domain.ErrNotFound.
+	GetBySlug(ctx context.Context, slug string) (*domain.Category, error)
 	Create(ctx context.Context, c domain.Category) (*domain.Category, error)
 	Update(ctx context.Context, id string, patch domain.CategoryPatch) (*domain.Category, error)
 	Delete(ctx context.Context, id string) error
@@ -54,6 +57,9 @@ type CategoryRepository interface {
 type BrandRepository interface {
 	List(ctx context.Context) ([]domain.Brand, error)
 	GetByID(ctx context.Context, id string) (*domain.Brand, error)
+	// GetBySlug dipakai validasi referensi sebelum menulis produk (issue #3).
+	// Slug yang tidak ada dikembalikan sebagai domain.ErrNotFound.
+	GetBySlug(ctx context.Context, slug string) (*domain.Brand, error)
 	Create(ctx context.Context, b domain.Brand) (*domain.Brand, error)
 	Update(ctx context.Context, id string, patch domain.BrandPatch) (*domain.Brand, error)
 	Delete(ctx context.Context, id string) error
