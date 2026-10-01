@@ -167,11 +167,15 @@ paths:
       operationId: getProduct
       summary: Produk lengkap
       description: |
-        Dipakai halaman detail dan form edit admin. `id` boleh berupa UUID
-        (format baru) **atau** id legacy Firestore: bila UUID tidak ditemukan,
-        server mencari lewat `legacy_id` sehingga URL lama tetap hidup.
+        Dipakai halaman detail dan form edit admin. `id` berupa UUID canonical;
+        id legacy Firestore diterima **hanya sebagai fallback baca**: UUID
+        dicoba lebih dulu, dan bila tidak ditemukan server mencari lewat
+        `legacy_id` sehingga URL lama tetap hidup. Respons selalu memuat `id`
+        canonical UUID — `legacy_id` tidak pernah muncul di DTO. Setiap
+        pemakaian fallback dicatat di log untuk menentukan kapan fallback
+        boleh dihapus.
       parameters:
-        - $ref: '#/components/parameters/PathID'
+        - $ref: '#/components/parameters/PathProductID'
       responses:
         '200':
           description: Produk lengkap
@@ -240,7 +244,7 @@ paths:
       operationId: getCategory
       summary: Satu kategori
       parameters:
-        - $ref: '#/components/parameters/PathID'
+        - $ref: '#/components/parameters/PathUUID'
       responses:
         '200':
           description: Kategori
@@ -285,7 +289,7 @@ paths:
       operationId: getBrand
       summary: Satu brand
       parameters:
-        - $ref: '#/components/parameters/PathID'
+        - $ref: '#/components/parameters/PathUUID'
       responses:
         '200':
           description: Brand
@@ -465,13 +469,30 @@ components:
                   message: { type: string }
 
   parameters:
-    PathID:
+    PathProductID:
       name: id
       in: path
       required: true
-      description: UUID produk/kategori/brand (atau id legacy Firestore untuk produk).
+      description: |
+        UUID produk canonical, atau id legacy Firestore (fallback **read-only**
+        selama masa migrasi; hanya untuk GET). Respons selalu memuat `id`
+        canonical UUID.
       schema:
         type: string
+
+    PathUUID:
+      name: id
+      in: path
+      required: true
+      description: |
+        Hanya UUID canonical. Id legacy Firestore **ditolak** `400
+        validation_failed` (field `id`) — berlaku untuk kategori/brand dan
+        untuk operasi tulis produk yang menyertakan `{id}` (PATCH/DELETE).
+        `POST /products` tidak menerima `id`; id produk selalu dibuat server.
+        Semantik legacy id: lihat issue #6.
+      schema:
+        type: string
+        format: uuid
 
     Category:
       name: category
