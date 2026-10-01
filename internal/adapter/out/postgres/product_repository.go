@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -23,13 +24,15 @@ const (
 // ProductRepository adalah implementasi port.ProductRepository di Postgres.
 type ProductRepository struct {
 	pool *pgxpool.Pool
+	log  *slog.Logger // boleh nil (dipakai untuk log fallback legacy)
 }
 
 var _ port.ProductRepository = (*ProductRepository)(nil)
 
-// NewProductRepository membuat repository produk di atas pool.
-func NewProductRepository(pool *pgxpool.Pool) *ProductRepository {
-	return &ProductRepository{pool: pool}
+// NewProductRepository membuat repository produk di atas pool. Logger boleh
+// nil — hanya log pemakaian fallback legacy yang membutuhkannya.
+func NewProductRepository(pool *pgxpool.Pool, log *slog.Logger) *ProductRepository {
+	return &ProductRepository{pool: pool, log: log}
 }
 
 // List mengembalikan satu halaman proyeksi katalog dengan keyset pagination.
@@ -93,9 +96,11 @@ func (r *ProductRepository) ListAll(ctx context.Context, includeInactive bool) (
 	return out, nil
 }
 
-// GetByID mengambil produk lengkap (termasuk gambar). `id` boleh berupa UUID
-// atau id legacy Firestore; yang terakhir menjaga URL lama tetap hidup setelah
-// cutover.
+// GetByID mengambil produk lengkap (termasuk gambar). `id` berupa UUID
+// canonical; id legacy Firestore diterima **hanya sebagai fallback baca**
+// (GET), menjaga URL lama tetap hidup selama masa migrasi. Setiap kali
+// fallback terpakai dicatat di log: hitungannya jadi dasar keputusan kapan
+// resolusi legacy dan kolom legacy_id boleh dihapus (issue #6).
 func (r *ProductRepository) GetByID(ctx context.Context, id string) (*domain.Product, error) {
 	qs := querier(ctx, r.pool)
 
@@ -115,6 +120,12 @@ func (r *ProductRepository) GetByID(ctx context.Context, id string) (*domain.Pro
 		return nil, MapError(err)
 	}
 	p := productFromLegacyRow(row)
+	if r.log != nil {
+		r.log.InfoContext(ctx, "produk diakses lewat legacy id",
+			"legacy_id", id,
+			"product_id", p.ID,
+		)
+	}
 	return r.hydrate(ctx, p)
 }
 

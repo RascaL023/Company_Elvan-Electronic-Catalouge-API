@@ -1,10 +1,13 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -177,7 +180,7 @@ func TestIntegrationProductLifecycle(t *testing.T) {
 	pool := testPool(t)
 	cats := NewCategoryRepository(pool)
 	brands := NewBrandRepository(pool)
-	products := NewProductRepository(pool)
+	products := NewProductRepository(pool, nil)
 	suffix := uuid.NewString()[:8]
 
 	inRollbackTx(t, pool, func(ctx context.Context) {
@@ -257,10 +260,147 @@ func TestIntegrationProductLifecycle(t *testing.T) {
 	})
 }
 
+// TestIntegrationLegacyIDSemantics mengunci semantik legacy id (issue #6):
+// read-only fallback yang selalu menjawab id canonical UUID, tidak pernah
+// diekspos kembali, dan ditolak sebagai nilai kosong/duplikat di database.
+// Kasus yang memicu error SQL sengaja ditaruh di transaksi terpisah — satu
+// error membatalkan seluruh transaksi Postgres.
+func TestIntegrationLegacyIDSemantics(t *testing.T) {
+	pool := testPool(t)
+	cats := NewCategoryRepository(pool)
+	suffix := uuid.NewString()[:8]
+
+	var logBuf bytes.Buffer
+	repo := NewProductRepository(pool, slog.New(slog.NewTextHandler(&logBuf, nil)))
+
+	// Blok utama: jalur sukses (tanpa error SQL, transaksi tetap sehat).
+	inRollbackTx(t, pool, func(ctx context.Context) {
+		cat, err := cats.Create(ctx, domain.Category{Name: "Kat Legacy", Slug: "it-legacy-cat-" + suffix})
+		if err != nil {
+			t.Fatalf("seed kategori: %v", err)
+		}
+		created, err := repo.Create(ctx, domain.Product{
+			Name: "Produk Legacy", Slug: "it-legacy-prod-" + suffix, Price: 5000,
+			Category: cat.Slug, IsActive: true,
+			Images: []domain.Image{{Key: "assets/images/products/it/legacy.jpg", FileID: "lf1"}},
+		})
+		if err != nil {
+			t.Fatalf("seed produk: %v", err)
+		}
+
+		legacy := "firestore-doc-" + suffix
+		setLegacyID(t, ctx, created.ID, legacy)
+
+		// 1) GET via UUID canonical.
+		byUUID, err := repo.GetByID(ctx, created.ID)
+		if err != nil {
+			t.Fatalf("GetByID(uuid): %v", err)
+		}
+		if byUUID.ID != created.ID {
+			t.Errorf("GetByID(uuid) = %q, ingin %q", byUUID.ID, created.ID)
+		}
+		if len(byUUID.Images) != 1 {
+			t.Errorf("gambar tidak ter-hydrate: %+v", byUUID.Images)
+		}
+
+		// 2) GET via legacy id: respons tetap id canonical UUID.
+		byLegacy, err := repo.GetByID(ctx, legacy)
+		if err != nil {
+			t.Fatalf("GetByID(legacy): %v", err)
+		}
+		if byLegacy.ID != created.ID {
+			t.Errorf("GetByID(legacy) = %q, ingin canonical %q", byLegacy.ID, created.ID)
+		}
+		if _, err := uuid.Parse(byLegacy.ID); err != nil {
+			t.Errorf("id respons bukan UUID canonical: %q", byLegacy.ID)
+		}
+
+		// 3) Pemakaian fallback legacy tercatat di log (dasar keputusan
+		// penghapusan fallback di kemudian hari).
+		if logs := logBuf.String(); !strings.Contains(logs, legacy) || !strings.Contains(logs, created.ID) {
+			t.Errorf("fallback legacy tidak tercatat di log:\n%s", logs)
+		}
+
+		// 4) legacy id hanya untuk baca: update menolaknya. Penegakan UUID-only
+		// PATCH/DELETE di level API admin ditegakkan saat write path dibangun.
+		if _, err := repo.Update(ctx, legacy, domain.ProductPatch{}); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("Update via legacy id seharusnya ErrNotFound, dapat %v", err)
+		}
+
+		// 5) id tidak dikenal (bukan UUID, bukan legacy) → tidak ditemukan.
+		if _, err := repo.GetByID(ctx, "no-such-legacy-"+suffix); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("id asing seharusnya ErrNotFound, dapat %v", err)
+		}
+	})
+
+	// Kasus error sengaja — masing-masing jadi statement terakhir di
+	// transaksinya sendiri (lihat catatan di atas file).
+	inRollbackTx(t, pool, func(ctx context.Context) {
+		cat, err := cats.Create(ctx, domain.Category{Name: "Kat Legacy", Slug: "it-legacy-cat-" + suffix})
+		if err != nil {
+			t.Fatalf("seed kategori: %v", err)
+		}
+		created, err := repo.Create(ctx, domain.Product{
+			Name: "Produk Legacy", Slug: "it-legacy-prod-" + suffix, Price: 5000,
+			Category: cat.Slug, IsActive: true,
+		})
+		if err != nil {
+			t.Fatalf("seed produk: %v", err)
+		}
+
+		// 6) legacy id string kosong ditolak database (CHECK migration 0002).
+		tx, ok := txFromContext(ctx)
+		if !ok {
+			t.Fatal("tidak ada transaksi di context")
+		}
+		uid, _ := uuid.Parse(created.ID)
+		if _, err := tx.Exec(ctx, "UPDATE products SET legacy_id = '' WHERE id = $1", uid); err == nil {
+			t.Fatal("legacy_id string kosong seharusnya ditolak CHECK")
+		} else if !errors.Is(MapError(err), domain.ErrValidation) {
+			t.Errorf("legacy_id kosong seharusnya ErrValidation, dapat %v", err)
+		}
+	})
+
+	inRollbackTx(t, pool, func(ctx context.Context) {
+		cat, err := cats.Create(ctx, domain.Category{Name: "Kat Legacy", Slug: "it-legacy-cat-" + suffix})
+		if err != nil {
+			t.Fatalf("seed kategori: %v", err)
+		}
+		first, err := repo.Create(ctx, domain.Product{
+			Name: "Produk Legacy", Slug: "it-legacy-prod-" + suffix, Price: 5000,
+			Category: cat.Slug, IsActive: true,
+		})
+		if err != nil {
+			t.Fatalf("seed produk pertama: %v", err)
+		}
+		second, err := repo.Create(ctx, domain.Product{
+			Name: "Produk Legacy 2", Slug: "it-legacy-prod-2-" + suffix, Price: 6000,
+			Category: cat.Slug, IsActive: true,
+		})
+		if err != nil {
+			t.Fatalf("seed produk kedua: %v", err)
+		}
+
+		legacy := "firestore-doc-" + suffix
+		setLegacyID(t, ctx, first.ID, legacy)
+
+		// 7) legacy id duplikat → konflik (UNIQUE, 23505). Inilah yang
+		// menjadi 409 di write path.
+		tx, ok := txFromContext(ctx)
+		if !ok {
+			t.Fatal("tidak ada transaksi di context")
+		}
+		uid2, _ := uuid.Parse(second.ID)
+		if _, err := tx.Exec(ctx, "UPDATE products SET legacy_id = $1 WHERE id = $2", legacy, uid2); !errors.Is(MapError(err), domain.ErrConflict) {
+			t.Errorf("legacy id duplikat seharusnya ErrConflict, dapat %v", err)
+		}
+	})
+}
+
 func TestIntegrationProductPatchRating(t *testing.T) {
 	pool := testPool(t)
 	cats := NewCategoryRepository(pool)
-	products := NewProductRepository(pool)
+	products := NewProductRepository(pool, nil)
 	suffix := uuid.NewString()[:8]
 
 	inRollbackTx(t, pool, func(ctx context.Context) {
@@ -328,7 +468,7 @@ func TestIntegrationProductPatchRating(t *testing.T) {
 func TestIntegrationProductDeleteRestrictedByCategory(t *testing.T) {
 	pool := testPool(t)
 	cats := NewCategoryRepository(pool)
-	products := NewProductRepository(pool)
+	products := NewProductRepository(pool, nil)
 	suffix := uuid.NewString()[:8]
 
 	inRollbackTx(t, pool, func(ctx context.Context) {
@@ -353,7 +493,7 @@ func TestIntegrationProductDeleteRestrictedByCategory(t *testing.T) {
 func TestIntegrationProductKeysetPagination(t *testing.T) {
 	pool := testPool(t)
 	cats := NewCategoryRepository(pool)
-	products := NewProductRepository(pool)
+	products := NewProductRepository(pool, nil)
 	suffix := uuid.NewString()[:8]
 
 	inRollbackTx(t, pool, func(ctx context.Context) {
@@ -447,7 +587,7 @@ func TestIntegrationProductKeysetPagination(t *testing.T) {
 func TestIntegrationListAllProjectsThumbnail(t *testing.T) {
 	pool := testPool(t)
 	cats := NewCategoryRepository(pool)
-	products := NewProductRepository(pool)
+	products := NewProductRepository(pool, nil)
 	suffix := uuid.NewString()[:8]
 
 	inRollbackTx(t, pool, func(ctx context.Context) {
