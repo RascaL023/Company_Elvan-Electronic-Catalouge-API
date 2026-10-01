@@ -487,8 +487,9 @@ components:
       description: |
         Hanya UUID canonical. Id legacy Firestore **ditolak** `400
         validation_failed` (field `id`) — berlaku untuk kategori/brand dan
-        untuk semua operasi tulis produk (POST/PATCH/DELETE) pada fase write
-        path. Semantik legacy id: lihat issue #6.
+        untuk operasi tulis produk yang menyertakan `{id}` (PATCH/DELETE).
+        `POST /products` tidak menerima `id`; id produk selalu dibuat server.
+        Semantik legacy id: lihat issue #6.
       schema:
         type: string
         format: uuid

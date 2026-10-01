@@ -119,13 +119,15 @@
 > menyusul bersama write path (Fase 4); di level repository `Update`/`Delete`
 > sudah menolak non-UUID via `parseID`. Migration `0002` menambah
 > `CHECK (legacy_id <> '')` di `products`/`categories`/`brands`. Fallback
-> legacy kini tercatat di log (`legacy_id` + `product_id`) sebagai dasar
-> keputusan penghapusan fallback/kolom setelah N minggu tanpa hit.
+> legacy kini tercatat di log (penanda resolusi + `product_id` canonical saja;
+> id legacy mentah **tidak** ditulis) sebagai dasar keputusan penghapusan
+> fallback/kolom setelah N minggu tanpa hit.
 > `openapi.yaml`: parameter `PathProductID` (UUID/legacy, GET) dipisah dari
-> `PathUUID` (UUID-only). Test integrasi baru
-> `TestIntegrationLegacyIDSemantics`: GET via UUID & legacy, log fallback,
-> legacy kosong ditolak CHECK, legacy duplikat → `409`, update via legacy →
-> `404`. Kriteria FE & importer ada di issue #6 (di luar scope repo BE).
+> `PathUUID` (UUID-only; POST produk tidak menerima `{id}`). Test integrasi baru
+> `TestIntegrationLegacyIDSemantics`: GET via UUID & legacy, log fallback tanpa
+> id mentah, legacy kosong ditolak CHECK, legacy duplikat → `409`, update &
+> delete via legacy → `404` tanpa data terhapus. Kriteria FE & importer ada di
+> issue #6 (di luar scope repo BE).
 
 ---
 

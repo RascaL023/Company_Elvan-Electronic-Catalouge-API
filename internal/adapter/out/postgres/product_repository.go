@@ -99,8 +99,9 @@ func (r *ProductRepository) ListAll(ctx context.Context, includeInactive bool) (
 // GetByID mengambil produk lengkap (termasuk gambar). `id` berupa UUID
 // canonical; id legacy Firestore diterima **hanya sebagai fallback baca**
 // (GET), menjaga URL lama tetap hidup selama masa migrasi. Setiap kali
-// fallback terpakai dicatat di log: hitungannya jadi dasar keputusan kapan
-// resolusi legacy dan kolom legacy_id boleh dihapus (issue #6).
+// fallback terpakai dicatat di log (hanya id canonical, bukan id legacy
+// mentahnya): hitungannya jadi dasar keputusan kapan resolusi legacy dan
+// kolom legacy_id boleh dihapus (issue #6).
 func (r *ProductRepository) GetByID(ctx context.Context, id string) (*domain.Product, error) {
 	qs := querier(ctx, r.pool)
 
@@ -121,8 +122,10 @@ func (r *ProductRepository) GetByID(ctx context.Context, id string) (*domain.Pro
 	}
 	p := productFromLegacyRow(row)
 	if r.log != nil {
+		// Id legacy mentah sengaja tidak dicatat: cukup penanda resolusi dan
+		// id canonical supaya hit fallback tetap bisa dihitung.
 		r.log.InfoContext(ctx, "produk diakses lewat legacy id",
-			"legacy_id", id,
+			"resolved_via", "legacy_id",
 			"product_id", p.ID,
 		)
 	}
@@ -199,15 +202,17 @@ func (r *ProductRepository) Update(ctx context.Context, id string, patch domain.
 }
 
 // Delete menghapus produk dan mengembalikan gambarnya supaya pemanggil dapat
-// membersihkan file di provider setelah commit.
+// membersihkan file di provider setelah commit. Seperti Update, hanya UUID
+// canonical yang diterima: id legacy (baca saja) ditolak ErrNotFound dan tidak
+// ada data yang terhapus.
 func (r *ProductRepository) Delete(ctx context.Context, id string) ([]domain.Image, error) {
-	product, err := r.GetByID(ctx, id)
+	uid, err := parseID(id)
 	if err != nil {
 		return nil, err
 	}
-	uid, err := uuid.Parse(product.ID)
+	product, err := r.GetByID(ctx, uid.String())
 	if err != nil {
-		return nil, domain.ErrNotFound
+		return nil, err
 	}
 
 	affected, err := querier(ctx, r.pool).DeleteProduct(ctx, uid)
