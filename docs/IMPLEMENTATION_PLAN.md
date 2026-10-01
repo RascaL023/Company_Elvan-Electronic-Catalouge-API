@@ -4,8 +4,8 @@
 > eksekusi yang eksplisit, checklist per fase, dan daftar yang perlu
 > disiapkan di laptop ini.
 >
-> Status: **draft rencana v1** — 2026-10-01
-> Repo ini: `ElectronicWebBE` (BE baru, saat ini docs-only)
+> Status: **berjalan** — terakhir diperbarui 2026-10-01
+> Repo ini: `ElectronicWebBE` (Fase 0–2 selesai; Fase 3+ belum)
 > Frontend: `/home/rascal/Documents/Project/Web/Magang Hardware/ElectronicWeb`
 
 ---
@@ -249,10 +249,10 @@ Ditegakkan `depguard` (lihat Fase 0).
 
 ### Fase 0 — Skeleton repo, toolchain, config, CI
 
-**Hasil:** repo siap, `make lint` dan `make test` lulus, CI jalan.
+**Hasil:** repo siap, `make lint` dan `make test` lulus, CI jalan. ✅
 
-- [ ] `go mod init elvan-catalog-api` lalu biarkan `go.mod` menulis `go 1.26`.
-- [ ] Buat struktur direktori:
+- [x] `go mod init elvan-catalog-api` lalu biarkan `go.mod` menulis `go 1.26`.
+- [x] Buat struktur direktori:
   ```bash
   mkdir -p cmd/api cmd/adminctl cmd/importer \
            internal/domain internal/application/port \
@@ -263,9 +263,10 @@ Ditegakkan `depguard` (lihat Fase 0).
            internal/platform/config internal/platform/logger \
            db/migrations db/queries api deploy docs
   ```
-- [ ] `internal/platform/config/config.go`: baca env, validasi saat startup, gagal cepat. Field sesuai ARCHITECTURE §12 (`APP_ENV`, `HTTP_ADDR`, `DATABASE_URL`, `DB_MAX_CONNS`, `IMAGEKIT_PRIVATE_KEY`, `IMAGEKIT_URL_ENDPOINT`, `SESSION_TTL`, `AUTH_TRANSPORT`, `COOKIE_*`, `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_LOGIN`, `LOG_LEVEL`).
-- [ ] `internal/platform/logger/logger.go`: `slog` JSON handler; level dari config.
-- [ ] `sqlc.yaml` (v2):
+  (`cmd/adminctl`, `cmd/importer`, `adapter/out/imagekit`, `adapter/out/security`, `deploy/` masih kosong — diisi di fase berikutnya.)
+- [x] `internal/platform/config/config.go`: baca env, validasi saat startup, gagal cepat. Field sesuai ARCHITECTURE §12 (`APP_ENV`, `HTTP_ADDR`, `DATABASE_URL`, `DB_MAX_CONNS`, `IMAGEKIT_PRIVATE_KEY`, `IMAGEKIT_URL_ENDPOINT`, `SESSION_TTL`, `AUTH_TRANSPORT`, `COOKIE_*`, `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_LOGIN`, `LOG_LEVEL`).
+- [x] `internal/platform/logger/logger.go`: `slog` JSON handler; level dari config.
+- [x] `sqlc.yaml` (v2) — ditambahkan di Fase 1 saat `db/queries` terisi:
   ```yaml
   version: "2"
   sql:
@@ -279,7 +280,7 @@ Ditegakkan `depguard` (lihat Fase 0).
           sql_package: "pgx/v5"
           emit_pointers_for_null_types: true
   ```
-- [ ] `.golangci.yml` dengan `depguard` (contoh inti):
+- [x] `.golangci.yml` dengan `depguard` (contoh inti):
   ```yaml
   linters:
     enable: [depguard, govet, staticcheck, errcheck, ineffassign, unused]
@@ -301,78 +302,72 @@ Ditegakkan `depguard` (lihat Fase 0).
             - "$gostd/github.com/jackc/pgx"
   ```
   (Sesuaikan detail impor adapter per paket.)
-- [ ] `Makefile` target minimum: `run`, `build`, `test`, `lint`, `sqlc`, `migrate-up`, `migrate-down`, `migrate-create`, `admin-create`. Contoh:
-  ```make
-  DATABASE_URL ?= postgres://elvan:secret@localhost:5432/elvan_catalog_dev?sslmode=disable
-  run:      ; go run ./cmd/api
-  build:    ; go build -o bin/api ./cmd/api
-  test:     ; go test ./...
-  lint:     ; golangci-lint run
-  sqlc:     ; sqlc generate
-  migrate-up:   ; goose -dir db/migrations postgres "$(DATABASE_URL)" up
-  migrate-down: ; goose -dir db/migrations postgres "$(DATABASE_URL)" down
-  ```
-- [ ] Perbarui `.gitignore`: tambah `bin/`, `.env`, `*.out`, `coverage.*`.
-- [ ] `cmd/api/main.go` minimal: baca config → logger → `http.ListenAndServe` → `/healthz`; graceful shutdown (`SIGTERM`).
-- [ ] `.github/workflows/ci.yml`: `go vet` → `golangci-lint` → `go test ./...` → cek `sqlc generate` tidak menghasilkan diff.
-- [ ] `README.md`: cara setup, tool yang dibutuhkan, Makefile.
+- [x] `Makefile` target: `run`, `build`, `test`, `lint`, `sqlc`, `migrate-up`, `migrate-down`, `migrate-create` (+ `vet`, `fmt`, `tidy`, `migrate-status`). **Belum:** `admin-create` (Fase 4 / `cmd/adminctl`).
+- [x] Perbarui `.gitignore`: tambah `bin/`, `.env`, `*.out`, `coverage.*`.
+- [x] `cmd/api/main.go`: baca config → logger → pool → wiring → `ListenAndServe` → `/healthz` (+ read path); graceful shutdown (`SIGTERM`/`SIGINT`).
+- [x] `.github/workflows/ci.yml`: `go vet` → `golangci-lint` → `go test ./...` → `go build`. **Belum:** cek `sqlc generate` tidak menghasilkan diff.
+- [x] `README.md`: cara setup, tool yang dibutuhkan, Makefile.
 
-**Kriteria lulus:** `go build ./...` OK; `make lint` hijau; `make run` menyajikan `/healthz` → `200`.
+**Kriteria lulus:** `go build ./...` OK; `make lint` hijau; `make run` menyajikan `/healthz` → `200`. ✅
 
 ---
 
 ### Fase 1 — Skema, domain, port, sqlc, adapter Postgres
 
-**Hasil:** skema terkunci, kontrak internal (domain + port) ada, kode sqlc ter-generate.
+**Hasil:** skema terkunci, kontrak internal (domain + port) ada, kode sqlc ter-generate. ✅
 
-- [ ] Buat migration pertama:
+- [x] Buat migration pertama:
   ```bash
   goose -dir db/migrations create init sql
   ```
-  - [ ] Salin skema **persis** dari ARCHITECTURE §9.1 (kategori, brand, produk, gambar, admin, sesi, semua index).
-  - [ ] Pastikan `CREATE EXTENSION IF NOT EXISTS pg_trgm;` ada di baris awal.
-  - [ ] `goose ... up` dan cek: `psql -c '\dt'`, `psql -c '\d products'`.
-- [ ] `internal/domain/`: `product.go`, `category.go`, `brand.go`, `admin.go`, `errors.go`.
-  - [ ] `Product` sesuai §6; `Image{Key, FileID}`; `Rating{Rate, Count}`.
-  - [ ] Error sentinel: `ErrNotFound`, `ErrConflict`, `ErrValidation`, `ErrUnauthorized`, `ErrForbidden`.
-  - [ ] Validasi invarian di sini (nama tidak kosong, slug valid, `price >= 0`, rating 0–5).
-  - [ ] Tambah `ProductPatch` (field pointer) untuk update parsial.
-- [ ] `internal/application/port/`: `repository.go`, `session.go`, `media.go`, `security.go`, `platform.go` (`TxManager`, `Clock`).
-- [ ] `db/queries/*.sql` untuk sqlc (satu file per agregat: `products.sql`, `categories.sql`, `brands.sql`, `admins.sql`, `sessions.sql`).
-- [ ] `make sqlc` → hasil di `internal/adapter/out/postgres/sqlcgen/` (jangan diedit manual).
-- [ ] Adapter Postgres dasar:
-  - [ ] `pool.go`: buat `pgxpool` dari `DATABASE_URL` + `DB_MAX_CONNS`.
-  - [ ] `tx.go`: `TxManager` menyimpan `pgx.Tx` di `context`; repo pakai tx dari context bila ada.
-  - [ ] `mapper.go`: **satu-satunya** tempat yang mengenal `category_id`/`brand_id` ↔ slug (lewat `JOIN`).
-  - [ ] Terjemahkan error Postgres `23505` → `ErrConflict`, `23503` → `ErrConflict`.
-- [ ] Unit test domain (murni): validasi produk, patch, rating.
+  - [x] Salin skema **persis** dari ARCHITECTURE §9.1 (kategori, brand, produk, gambar, admin, sesi, semua index).
+  - [x] Pastikan `CREATE EXTENSION IF NOT EXISTS pg_trgm;` ada di baris awal.
+  - [x] `goose ... up` dan cek: `psql -c '\dt'`, `psql -c '\d products'`.
+- [x] `internal/domain/`: `product.go`, `category.go`, `brand.go`, `admin.go`, `errors.go`.
+  - [x] `Product` sesuai §6; `Image{Key, FileID}`; `Rating{Rate, Count}`.
+  - [x] Error sentinel: `ErrNotFound`, `ErrConflict`, `ErrValidation`, `ErrUnauthorized`, `ErrForbidden`.
+  - [x] Validasi invarian di sini (nama tidak kosong, slug valid, `price >= 0`, rating 0–5).
+  - [x] Tambah `ProductPatch` (field pointer) untuk update parsial.
+- [x] `internal/application/port/`: `repository.go`, `session.go`, `media.go`, `security.go`, `platform.go` (`TxManager`, `Clock`).
+- [x] `db/queries/*.sql` untuk sqlc (`products.sql`, `products_list.sql`, `product_images.sql`, `categories.sql`, `brands.sql`, `admins.sql`, `sessions.sql`).
+- [x] `make sqlc` → hasil di `internal/adapter/out/postgres/sqlcgen/` (jangan diedit manual).
+- [x] Adapter Postgres dasar:
+  - [x] `pool.go`: buat `pgxpool` dari `DATABASE_URL` + `DB_MAX_CONNS`.
+  - [x] `tx.go`: `TxManager` menyimpan `pgx.Tx` di `context`; repo pakai tx dari context bila ada.
+  - [x] `mapper.go`: **satu-satunya** tempat yang mengenal `category_id`/`brand_id` ↔ slug (lewat `JOIN`).
+  - [x] Terjemahkan error Postgres `23505` → `ErrConflict`, `23503` → `ErrConflict` (+ `23001` RESTRICT → `ErrConflict`).
+- [x] Unit test domain (murni): validasi produk, patch, rating.
 - [ ] Test integrasi Postgres pakai `testcontainers-go` (butuh Docker) untuk mapper + constraint.
+  > **Alternatif sudah jalan:** `postgres_integration_test.go` terhadap PostgreSQL nyata via `DATABASE_URL` + transaksi rollback (lihat status Fase 2 di atas). `testcontainers-go` belum masuk `go.mod`.
 
-**Kriteria lulus:** `goose up/down` bersih; `make sqlc` idempoten (tanpa diff); `go test ./internal/domain/...` hijau.
+**Kriteria lulus:** `goose up/down` bersih; `make sqlc` idempoten (tanpa diff); `go test ./internal/domain/...` hijau. ✅
 
 ---
 
 ### Fase 2 — Jalur baca publik
 
-**Hasil:** FE bisa membaca katalog dari API (mode baca).
+**Hasil:** FE bisa membaca katalog dari API (mode baca). ✅ (jalur BE; adapter FE = Fase 3)
 
-- [ ] Repo read: `CategoryRepository`, `BrandRepository`, `ProductRepository` (implementasi sqlc).
-  - [ ] `List` produk: filter `category`, `brand`, `search` (`ILIKE`/`pg_trgm`), `sort`, `limit`, `cursor`.
-  - [ ] **Keyset pagination**: cursor = base64url dari `{sort, lastValue, lastId}`; urutan selalu ditutup `id` (tabel `ORDER BY` di §8). Cursor dengan `sort` tidak cocok → `400 invalid_cursor`.
-  - [ ] `GetByID`: coba UUID; **jika tidak ketemu, fallback `legacy_id`** (V2) supaya URL/bookmark lama tidak putus.
-  - [ ] Proyeksi `CatalogProduct`: `thumbnail` = gambar `position = 0`; `brand` kosong → `""`.
-- [ ] `internal/adapter/in/httpapi/`:
-  - [ ] `router.go`: `net/http.ServeMux` gaya Go 1.22+ (`GET /api/v1/products/{id}`).
-  - [ ] `middleware.go` urutan dari luar: `recover → request id → access log → CORS → rate limit → CSRF/Origin → auth → handler`.
-  - [ ] `errors.go`: satu mapper error domain → HTTP + `code` (tabel §8). Error 500 tidak bocorkan detail ke klien.
-  - [ ] DTO camelCase, waktu ISO-8601 UTC.
-  - [ ] `GET /api/v1/catalog` (proyeksi penuh) + `ETag` + `Cache-Control: public, max-age=60`.
-  - [ ] `GET /api/v1/products`, `/products/{id}`, `/categories`, `/categories/{id}`, `/brands`, `/brands/{id}`.
-  - [ ] `/healthz` (hidup) dan `/readyz` (ping DB).
-- [ ] `api/openapi.yaml` (OpenAPI 3.1) untuk subset endpoint fase ini.
-- [ ] Test HTTP `httptest` (termasuk CORS/CSRF) + test kontrak vs OpenAPI (opsional tapi disarankan).
+- [x] Repo read: `CategoryRepository`, `BrandRepository`, `ProductRepository` (implementasi sqlc).
+  - [x] `List` produk: filter `category`, `brand`, `search` (`ILIKE`), `sort`, `limit`, `cursor`.
+  - [x] **Keyset pagination**: cursor opaque base64url `{s,c,p,r,rc,i}`; urutan selalu ditutup `id`; satu query per `sort`. Cursor dengan `sort` tidak cocok → `400 invalid_cursor`.
+  - [x] `GetByID`: coba UUID; **jika tidak ketemu, fallback `legacy_id`** (V2) supaya URL/bookmark lama tidak putus.
+  - [x] Proyeksi `CatalogProduct`: `thumbnail` = gambar `position = 0`; `brand` kosong → `""`.
+- [x] `internal/adapter/in/httpapi/`:
+  - [x] `router.go`: `net/http.ServeMux` gaya Go 1.22+ (`GET /api/v1/products/{id}`).
+  - [x] `middleware.go` urutan dari luar (subset baca): `recover → request id → access log → CORS → handler`.
+    **Belum (Fase 4/7):** `rate limit`, `CSRF/Origin` untuk method non-aman, `auth`.
+  - [x] `errors.go`: satu mapper error domain → HTTP + `code` (tabel §8). Error 500 tidak bocorkan detail ke klien.
+  - [x] DTO camelCase, waktu ISO-8601 UTC (`.000Z`).
+  - [x] `GET /api/v1/catalog` (proyeksi penuh) + `ETag` + `Cache-Control: public, max-age=60` + `If-None-Match` → 304.
+  - [x] `GET /api/v1/products`, `/products/{id}`, `/categories`, `/categories/{id}`, `/brands`, `/brands/{id}`.
+  - [x] `/healthz` (hidup) dan `/readyz` (ping DB).
+- [x] `api/openapi.yaml` (OpenAPI 3.1) untuk subset endpoint fase ini (lolos `redocly lint`).
+- [x] Test HTTP `httptest` (handler + CORS + ETag/304 + error codes).
+  - [ ] Test CSRF (Fase 4, method non-aman).
+  - [ ] Test kontrak otomatis vs `openapi.yaml` (opsional; belum).
 
-**Kriteria lulus:** `GET /api/v1/catalog` dan `/products` mengembalikan bentuk yang sama dengan `CatalogProduct` FE; cursor bisa dipakai bolak-balik; `ETag` berubah saat data berubah.
+**Kriteria lulus:** `GET /api/v1/catalog` dan `/products` mengembalikan bentuk yang sama dengan `CatalogProduct` FE; cursor bisa dipakai bolak-balik; `ETag` berubah saat data berubah. ✅ (diverifikasi smoke + unit/httptest)
 
 ---
 
@@ -455,12 +450,13 @@ Ditegakkan `depguard` (lihat Fase 0).
 ### Fase 7 — Hardening
 
 - [ ] Rate limit `/auth/login` per IP + per email (`RATE_LIMIT_LOGIN`).
-- [ ] Batas ukuran body; header keamanan dasar; validasi whitelist `limit` & `sort`.
+- [ ] Batas ukuran body; header keamanan dasar.
+- [x] Validasi whitelist `limit` & `sort` (sudah di handler baca Fase 2).
 - [ ] Timeout per request dan per query lewat `context`.
-- [ ] Graceful shutdown: tunggu request berjalan, tutup pool.
+- [x] Graceful shutdown: tunggu request berjalan, tutup pool (sudah di `cmd/api` Fase 0/2).
 - [ ] Backup: `pg_dump` terjadwal ke luar VPS + uji restore berkala.
 - [ ] Titik sambung metrics/tracing di middleware (implementasi ditunda).
-- [ ] Pastikan `depguard` masih hijau setelah semua fitur masuk.
+- [x] Pastikan `depguard` masih hijau setelah semua fitur masuk (hijau untuk kode Fase 0–2; cek ulang setelah Fase 4–6).
 
 ---
 
@@ -538,11 +534,11 @@ go vet → golangci-lint → go test ./... → validasi OpenAPI → sqlc generat
 
 ## 7. Definition of Done (global)
 
-- [ ] `make lint` dan `make test` hijau; `depguard` menegakkan aturan layer.
-- [ ] `sqlc generate` bersih (tidak ada diff).
-- [ ] `openapi.yaml` sinkron dengan handler.
-- [ ] Tidak ada secret di repo (semua dari env yang divalidasi saat startup).
-- [ ] `GET /catalog` dan list publik memakai `ETag` + `Cache-Control`.
+- [x] `make lint` dan `make test` hijau; `depguard` menegakkan aturan layer. *(untuk lingkup Fase 0–2)*
+- [x] `sqlc generate` bersih (tidak ada diff). *(lokal; belum dipaksa di CI)*
+- [x] `openapi.yaml` sinkron dengan handler baca. *(endpoint tulis/auth/media belum)*
+- [x] Tidak ada secret di repo (semua dari env yang divalidasi saat startup).
+- [x] `GET /catalog` dan list publik memakai `ETag` + `Cache-Control`.
 - [ ] Semua endpoint tulis & media wajib sesi admin (`401` tanpa sesi).
 - [ ] Hapus gambar dilakukan server-side setelah commit; kegagalan dicatat di log.
 - [ ] Migration dijalankan eksplisit sebelum deploy; deploy + rollback terdokumentasi.
