@@ -135,6 +135,17 @@
 > id mentah, legacy kosong ditolak CHECK, legacy duplikat → `409`, update &
 > delete via legacy → `404` tanpa data terhapus. Kriteria FE & importer ada di
 > issue #6 (di luar scope repo BE).
+>
+> **Atomisitas tulis & kepemilikan transaksi — issue #4 (2026-10-02):**
+> kepemilikan transaksi ada di **use case** (ARCHITECTURE §7), bukan pemanggil
+> atau repository. `catalog.Service` sekarang punya `port.TxManager` dan method
+> `Create`/`Update`/`Delete` yang membungkus operasi repo dengan
+> `WithinTx`, jadi produk + gambar selalu satu unit dan pemanggil tidak bisa
+> lupa membungkus. Signature baru: `New(products, tx, log)`. Handler HTTP, auth, dan
+> validasi keberadaan category/brand **belum** ada (lihat issue #3). Test
+> integrasi `product_write_integration_test.go` sengaja tidak memakai
+> `inRollbackTx` (transaksi dibuka use case; test mengamati state setelah
+> rollback) dan memaksa insert gambar gagal lewat byte NUL di `image.key`.
 
 ---
 
@@ -426,7 +437,7 @@ Ditegakkan `depguard` (lihat Fase 0).
 - [ ] Endpoint: `POST /auth/login` (rate limit + delay konstan jika gagal), `POST /auth/logout`, `GET /auth/me`.
 - [ ] CORS: `Access-Control-Allow-Origin` eksak (bukan `*`), `Credentials: true`, `Vary: Origin`. Untuk method non-aman wajib cek `Origin`/`Sec-Fetch-Site` + `Content-Type: application/json`.
 - [ ] Endpoint tulis: `POST/PATCH/DELETE /products[/{id}]`, `/categories[/{id}]`, `/brands[/{id}]`.
-  - [ ] Operasi multi-tabel (produk + gambar) dalam `TxManager.WithinTx`.
+  - [~] Operasi multi-tabel (produk + gambar) dalam `TxManager.WithinTx` — use case `catalog.Service` sudah memilikinya (issue #4); handler HTTP belum.
   - [ ] `DELETE` produk = hard delete; kategori/brand terpakai → `409`.
   - [ ] `includeInactive` hanya dihormati untuk admin terautentikasi.
 - [ ] CLI job: pembersihan sesi kedaluwarsa (`DeleteExpired`).
