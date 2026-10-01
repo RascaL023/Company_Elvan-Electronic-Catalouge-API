@@ -13,6 +13,12 @@ SELECT id, name, slug, description, created_at, updated_at
 FROM categories
 WHERE legacy_id = sqlc.arg('legacy_id');
 
+-- name: GetCategoryBySlug :one
+-- Dipakai validasi referensi sebelum menulis produk (issue #3).
+SELECT id, name, slug, description, created_at, updated_at
+FROM categories
+WHERE slug = sqlc.arg('slug');
+
 -- name: CreateCategory :one
 INSERT INTO categories (name, slug, description, legacy_id)
 VALUES (

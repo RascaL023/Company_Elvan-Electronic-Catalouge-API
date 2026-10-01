@@ -60,6 +60,22 @@ func (r *CategoryRepository) GetByID(ctx context.Context, id string) (*domain.Ca
 	}, nil
 }
 
+// GetBySlug mencari kategori berdasarkan slug; tidak ketemu → domain.ErrNotFound.
+func (r *CategoryRepository) GetBySlug(ctx context.Context, slug string) (*domain.Category, error) {
+	row, err := querier(ctx, r.pool).GetCategoryBySlug(ctx, slug)
+	if err != nil {
+		return nil, MapError(err)
+	}
+	return &domain.Category{
+		ID:          row.ID.String(),
+		Name:        row.Name,
+		Slug:        row.Slug,
+		Description: row.Description,
+		CreatedAt:   timeFrom(row.CreatedAt),
+		UpdatedAt:   timeFrom(row.UpdatedAt),
+	}, nil
+}
+
 func (r *CategoryRepository) Create(ctx context.Context, c domain.Category) (*domain.Category, error) {
 	row, err := querier(ctx, r.pool).CreateCategory(ctx, sqlcgen.CreateCategoryParams{
 		Name:        c.Name,

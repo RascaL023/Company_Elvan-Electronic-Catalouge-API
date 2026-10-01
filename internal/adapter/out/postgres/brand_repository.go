@@ -58,6 +58,21 @@ func (r *BrandRepository) GetByID(ctx context.Context, id string) (*domain.Brand
 	}, nil
 }
 
+// GetBySlug mencari brand berdasarkan slug; tidak ketemu → domain.ErrNotFound.
+func (r *BrandRepository) GetBySlug(ctx context.Context, slug string) (*domain.Brand, error) {
+	row, err := querier(ctx, r.pool).GetBrandBySlug(ctx, slug)
+	if err != nil {
+		return nil, MapError(err)
+	}
+	return &domain.Brand{
+		ID:        row.ID.String(),
+		Name:      row.Name,
+		Slug:      row.Slug,
+		CreatedAt: timeFrom(row.CreatedAt),
+		UpdatedAt: timeFrom(row.UpdatedAt),
+	}, nil
+}
+
 func (r *BrandRepository) Create(ctx context.Context, b domain.Brand) (*domain.Brand, error) {
 	row, err := querier(ctx, r.pool).CreateBrand(ctx, sqlcgen.CreateBrandParams{
 		Name: b.Name,

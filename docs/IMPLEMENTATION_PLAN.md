@@ -115,8 +115,9 @@
 >
 > **Catatan untuk Fase 4:** subquery `category`/`brand` di `Create`/`Update`
 > me-resolve slug ke FK. Category yang tidak ada memicu `NOT NULL` violation
-> (→ `ErrValidation`); brand yang tidak ada menjadi `NULL` **diam-diam**, jadi
-> use case sebaiknya memvalidasi keberadaan category/brand sebelum menulis.
+> (→ `ErrValidation`); brand yang tidak ada menjadi `NULL` **diam-diam**.
+> **Sudah ditangani di issue #3** lewat validasi eksplisit di use case;
+> constraint DB tetap jadi backstop.
 >
 > **Semantik legacy id — issue #6 (2026-10-01):** keputusan terkunci —
 > legacy id Firestore **hanya untuk baca**. `GET /products/{id}` mencoba UUID
@@ -146,6 +147,20 @@
 > integrasi `product_write_integration_test.go` sengaja tidak memakai
 > `inRollbackTx` (transaksi dibuka use case; test mengamati state setelah
 > rollback) dan memaksa insert gambar gagal lewat byte NUL di `image.key`.
+>
+> **Validasi referensi category/brand — issue #3 (2026-10-02):** slug
+> `category`/`brand` kini divalidasi **di dalam transaksi penulisan** sebelum
+> menulis (tidak ada TOCTOU), tidak ditemukan → `ValidationError` field
+> `category`/`brand` → `400 validation_failed`, dan tidak ada baris yang
+> ditulis. Ini menghapus dua perilaku senyap lama: brand yang tidak ada tadinya
+> mengosongkan `brand_id`, dan category yang tidak ada pada `Update` tadinya
+> diabaikan. `Update` hanya memvalidasi field yang memang diubah (`nil` =
+> tidak diubah); brand `""` berarti tanpa brand. Port `CategoryRepository` &
+> `BrandRepository` bertambah `GetBySlug` (query `GetCategoryBySlug` baru;
+> `GetBrandBySlug` sudah ada). Test: 4 kasus unit
+> (`TestValidateRefsRejectsUnknownSlug`, sekaligus memastikan repo tidak
+> tersentuh) + 4 kasus integrasi di
+> `product_reference_validation_integration_test.go`.
 
 ---
 
