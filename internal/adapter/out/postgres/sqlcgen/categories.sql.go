@@ -128,6 +128,36 @@ func (q *Queries) GetCategoryByLegacyID(ctx context.Context, legacyID *string) (
 	return i, err
 }
 
+const getCategoryBySlug = `-- name: GetCategoryBySlug :one
+SELECT id, name, slug, description, created_at, updated_at
+FROM categories
+WHERE slug = $1
+`
+
+type GetCategoryBySlugRow struct {
+	ID          uuid.UUID
+	Name        string
+	Slug        string
+	Description string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+// Dipakai validasi referensi sebelum menulis produk (issue #3).
+func (q *Queries) GetCategoryBySlug(ctx context.Context, slug string) (GetCategoryBySlugRow, error) {
+	row := q.db.QueryRow(ctx, getCategoryBySlug, slug)
+	var i GetCategoryBySlugRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listCategories = `-- name: ListCategories :many
 SELECT id, name, slug, description, created_at, updated_at
 FROM categories

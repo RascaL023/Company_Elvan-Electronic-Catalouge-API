@@ -64,6 +64,8 @@ func run() error {
 	// Wiring adapter → use case.
 	catalogService := catalog.New(
 		postgres.NewProductRepository(pool, log),
+		postgres.NewCategoryRepository(pool),
+		postgres.NewBrandRepository(pool),
 		postgres.NewTxManager(pool),
 		log,
 	)
