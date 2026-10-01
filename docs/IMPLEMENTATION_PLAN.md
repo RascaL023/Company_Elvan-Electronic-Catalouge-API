@@ -20,7 +20,7 @@
 | **DB development lokal** | **PostgreSQL 18.1 native** (sudah terinstall) | diputuskan di sesi ini |
 | Tipe `price` | `bigint`, selalu bilangan bulat Rupiah | V1 — kode FE |
 | Rute detail FE | `/product/:id` → `GET /products/{id}` (bukan slug) | V2 — `src/app/router.tsx` |
-| Id lama (Firestore) | `GET /products/{id}` resolve UUID **atau** `legacy_id` | V2 — prioritas `legacy_id` |
+| Id lama (Firestore) | `GET /products/{id}` resolve UUID **atau** `legacy_id` (**baca saja**; UUID dicoba lebih dulu) | V2 + issue #6 |
 | `slug` | FE sudah membuat; server generate jika kosong; duplikat → `409` | V3 — `src/utils/hash.ts` |
 | Hapus kategori/brand terpakai | `ON DELETE RESTRICT` → `409` | V4 |
 | Bentuk gambar di API | `images: [{ key, fileId }]`; adapter FE memetakan ke array paralel | mismatch dikunci di §4 |
@@ -110,6 +110,24 @@
 > me-resolve slug ke FK. Category yang tidak ada memicu `NOT NULL` violation
 > (→ `ErrValidation`); brand yang tidak ada menjadi `NULL` **diam-diam**, jadi
 > use case sebaiknya memvalidasi keberadaan category/brand sebelum menulis.
+>
+> **Semantik legacy id — issue #6 (2026-10-01):** keputusan terkunci —
+> legacy id Firestore **hanya untuk baca**. `GET /products/{id}` mencoba UUID
+> dulu, lalu fallback `legacy_id`; respons selalu memuat `id` canonical UUID
+> dan `legacy_id` tidak pernah muncul di DTO. POST/PATCH/DELETE **UUID-only**:
+> id lain → `400 validation_failed` (field `id`) — penegakan penuh di level API
+> menyusul bersama write path (Fase 4); di level repository `Update`/`Delete`
+> sudah menolak non-UUID via `parseID`. Migration `0002` menambah
+> `CHECK (legacy_id <> '')` di `products`/`categories`/`brands`. Fallback
+> legacy kini tercatat di log (penanda resolusi + `product_id` canonical saja;
+> id legacy mentah **tidak** ditulis) sebagai dasar keputusan penghapusan
+> fallback/kolom setelah N minggu tanpa hit.
+> `openapi.yaml`: parameter `PathProductID` (UUID/legacy, GET) dipisah dari
+> `PathUUID` (UUID-only; POST produk tidak menerima `{id}`). Test integrasi baru
+> `TestIntegrationLegacyIDSemantics`: GET via UUID & legacy, log fallback tanpa
+> id mentah, legacy kosong ditolak CHECK, legacy duplikat → `409`, update &
+> delete via legacy → `404` tanpa data terhapus. Kriteria FE & importer ada di
+> issue #6 (di luar scope repo BE).
 
 ---
 
