@@ -86,6 +86,8 @@ SET name        = COALESCE(sqlc.narg('name'), name),
         WHEN sqlc.narg('brand')::text = '' THEN NULL
         ELSE (SELECT id FROM brands WHERE slug = sqlc.narg('brand')::text)
     END,
+    rating_rate  = COALESCE(sqlc.narg('rating_rate'), rating_rate),
+    rating_count = COALESCE(sqlc.narg('rating_count'), rating_count),
     is_active  = COALESCE(sqlc.narg('is_active'), is_active),
     updated_at = now()
 WHERE products.id = sqlc.arg('id')

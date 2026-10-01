@@ -257,6 +257,74 @@ func TestIntegrationProductLifecycle(t *testing.T) {
 	})
 }
 
+func TestIntegrationProductPatchRating(t *testing.T) {
+	pool := testPool(t)
+	cats := NewCategoryRepository(pool)
+	products := NewProductRepository(pool)
+	suffix := uuid.NewString()[:8]
+
+	inRollbackTx(t, pool, func(ctx context.Context) {
+		cat, err := cats.Create(ctx, domain.Category{Name: "Kat Rating", Slug: "it-rating-cat-" + suffix})
+		if err != nil {
+			t.Fatalf("seed kategori: %v", err)
+		}
+		created, err := products.Create(ctx, domain.Product{
+			Name: "Produk Rating", Slug: "it-rating-prod-" + suffix, Price: 1000,
+			Category: cat.Slug, IsActive: true,
+			Rating: domain.Rating{Rate: 3.0, Count: 5},
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		// 1) Update rating saja.
+		newRating := domain.Rating{Rate: 4.5, Count: 20}
+		updated, err := products.Update(ctx, created.ID, domain.ProductPatch{Rating: &newRating})
+		if err != nil {
+			t.Fatalf("Update rating: %v", err)
+		}
+		if updated.Rating.Rate != 4.5 || updated.Rating.Count != 20 {
+			t.Errorf("rating setelah update = %+v, ingin {4.5 20}", updated.Rating)
+		}
+		if updated.Price != 1000 {
+			t.Errorf("price berubah tanpa sengaja: %d", updated.Price)
+		}
+
+		// 2) Update field non-rating: rating existing harus tetap.
+		newPrice := int64(2500)
+		updated, err = products.Update(ctx, created.ID, domain.ProductPatch{Price: &newPrice})
+		if err != nil {
+			t.Fatalf("Update price: %v", err)
+		}
+		if updated.Price != newPrice {
+			t.Errorf("price = %d, ingin %d", updated.Price, newPrice)
+		}
+		if updated.Rating.Rate != 4.5 || updated.Rating.Count != 20 {
+			t.Errorf("rating berubah saat update non-rating: %+v", updated.Rating)
+		}
+
+		// 3) Update rating bersama field lain.
+		newerRating := domain.Rating{Rate: 5.0, Count: 99}
+		newName := "Produk Rating Updated"
+		updated, err = products.Update(ctx, created.ID, domain.ProductPatch{
+			Name:   &newName,
+			Rating: &newerRating,
+		})
+		if err != nil {
+			t.Fatalf("Update name+rating: %v", err)
+		}
+		if updated.Name != newName {
+			t.Errorf("name = %q, ingin %q", updated.Name, newName)
+		}
+		if updated.Rating.Rate != 5.0 || updated.Rating.Count != 99 {
+			t.Errorf("rating setelah update gabungan = %+v, ingin {5.0 99}", updated.Rating)
+		}
+		if updated.Price != newPrice {
+			t.Errorf("price berubah tanpa sengaja: %d", updated.Price)
+		}
+	})
+}
+
 func TestIntegrationProductDeleteRestrictedByCategory(t *testing.T) {
 	pool := testPool(t)
 	cats := NewCategoryRepository(pool)
