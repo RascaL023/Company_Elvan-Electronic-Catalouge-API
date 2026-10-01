@@ -62,7 +62,11 @@ func run() error {
 	defer pool.Close()
 
 	// Wiring adapter → use case.
-	catalogService := catalog.New(postgres.NewProductRepository(pool, log), log)
+	catalogService := catalog.New(
+		postgres.NewProductRepository(pool, log),
+		postgres.NewTxManager(pool),
+		log,
+	)
 	taxonomyService := taxonomy.New(
 		postgres.NewCategoryRepository(pool),
 		postgres.NewBrandRepository(pool),
