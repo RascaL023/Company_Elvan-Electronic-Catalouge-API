@@ -279,9 +279,11 @@ SET name        = COALESCE($1, name),
         WHEN $6::text = '' THEN NULL
         ELSE (SELECT id FROM brands WHERE slug = $6::text)
     END,
-    is_active  = COALESCE($7, is_active),
+    rating_rate  = COALESCE($7, rating_rate),
+    rating_count = COALESCE($8, rating_count),
+    is_active  = COALESCE($9, is_active),
     updated_at = now()
-WHERE products.id = $8
+WHERE products.id = $10
 RETURNING id, name, slug, price, description, created_at, updated_at
 `
 
@@ -292,6 +294,8 @@ type UpdateProductParams struct {
 	Description *string
 	Category    *string
 	Brand       *string
+	RatingRate  pgtype.Numeric
+	RatingCount *int32
 	IsActive    *bool
 	ID          uuid.UUID
 }
@@ -314,6 +318,8 @@ func (q *Queries) UpdateProduct(ctx context.Context, arg UpdateProductParams) (U
 		arg.Description,
 		arg.Category,
 		arg.Brand,
+		arg.RatingRate,
+		arg.RatingCount,
 		arg.IsActive,
 		arg.ID,
 	)
