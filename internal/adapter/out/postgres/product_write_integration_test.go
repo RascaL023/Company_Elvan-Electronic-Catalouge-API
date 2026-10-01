@@ -27,7 +27,7 @@ func TestIntegrationProductCreateAtomicOnImageFailure(t *testing.T) {
 	ctx := context.Background()
 	cats := NewCategoryRepository(pool)
 	products := NewProductRepository(pool, nil)
-	svc := catalog.New(products, NewTxManager(pool), nil)
+	svc := catalog.New(products, cats, NewBrandRepository(pool), NewTxManager(pool), nil)
 
 	suffix := uuid.NewString()[:8]
 	cat, err := cats.Create(ctx, domain.Category{Name: "Kat Atomic", Slug: "it-atomic-cat-" + suffix})
@@ -35,7 +35,7 @@ func TestIntegrationProductCreateAtomicOnImageFailure(t *testing.T) {
 		t.Fatalf("seed kategori: %v", err)
 	}
 	slug := "it-atomic-prod-" + suffix
-	cleanupProductAndCategory(t, pool, ctx, slug, cat.ID)
+	cleanupFixtures(t, pool, ctx, slug, cat.ID, "")
 
 	_, err = svc.Create(ctx, catalog.CreateProductInput{
 		Name:     "Produk Atomic",
@@ -59,7 +59,7 @@ func TestIntegrationProductUpdateAtomicOnImageFailure(t *testing.T) {
 	ctx := context.Background()
 	cats := NewCategoryRepository(pool)
 	products := NewProductRepository(pool, nil)
-	svc := catalog.New(products, NewTxManager(pool), nil)
+	svc := catalog.New(products, cats, NewBrandRepository(pool), NewTxManager(pool), nil)
 
 	suffix := uuid.NewString()[:8]
 	cat, err := cats.Create(ctx, domain.Category{Name: "Kat Atomic", Slug: "it-atomic-cat-" + suffix})
@@ -67,7 +67,7 @@ func TestIntegrationProductUpdateAtomicOnImageFailure(t *testing.T) {
 		t.Fatalf("seed kategori: %v", err)
 	}
 	slug := "it-atomic-prod-" + suffix
-	cleanupProductAndCategory(t, pool, ctx, slug, cat.ID)
+	cleanupFixtures(t, pool, ctx, slug, cat.ID, "")
 
 	created, err := svc.Create(ctx, catalog.CreateProductInput{
 		Name:     "Produk Atomic",
@@ -104,17 +104,24 @@ func TestIntegrationProductUpdateAtomicOnImageFailure(t *testing.T) {
 	}
 }
 
-// cleanupProductAndCategory menghapus produk lalu kategorinya setelah test.
-// Produk dihapus lebih dulu karena FK `products.category_id` memakai
-// ON DELETE RESTRICT.
-func cleanupProductAndCategory(t *testing.T, pool *pgxpool.Pool, ctx context.Context, productSlug, categoryID string) {
+// cleanupFixtures menghapus produk lalu category/brand-nya setelah test. Produk
+// dihapus lebih dulu karena FK `products.category_id`/`brand_id` memakai
+// ON DELETE RESTRICT; `categoryID`/`brandID` boleh kosong bila tidak dipakai.
+func cleanupFixtures(t *testing.T, pool *pgxpool.Pool, ctx context.Context, productSlug, categoryID, brandID string) {
 	t.Helper()
 	t.Cleanup(func() {
 		if _, err := pool.Exec(ctx, "DELETE FROM products WHERE slug = $1", productSlug); err != nil {
 			t.Logf("cleanup produk %q: %v", productSlug, err)
 		}
-		if _, err := pool.Exec(ctx, "DELETE FROM categories WHERE id = $1", categoryID); err != nil {
-			t.Logf("cleanup kategori %q: %v", categoryID, err)
+		if categoryID != "" {
+			if _, err := pool.Exec(ctx, "DELETE FROM categories WHERE id = $1", categoryID); err != nil {
+				t.Logf("cleanup kategori %q: %v", categoryID, err)
+			}
+		}
+		if brandID != "" {
+			if _, err := pool.Exec(ctx, "DELETE FROM brands WHERE id = $1", brandID); err != nil {
+				t.Logf("cleanup brand %q: %v", brandID, err)
+			}
 		}
 	})
 }
