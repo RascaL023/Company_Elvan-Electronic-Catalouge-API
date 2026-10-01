@@ -30,6 +30,15 @@ make migrate-up           # terapkan migrasi (butuh DATABASE_URL)
 make run                  # jalankan server di HTTP_ADDR
 ```
 
+Test integrasi Postgres memakai `TEST_DATABASE_URL` (di CI diisi otomatis oleh
+service container); bila kosong, test di-skip sehingga `make test` tetap aman
+tanpa database:
+
+```bash
+export TEST_DATABASE_URL="postgres://user:pass@localhost:5432/elvan_catalog_test?sslmode=disable"
+make test-integration
+```
+
 Cek liveness:
 
 ```bash
@@ -43,6 +52,7 @@ make help            # daftar semua target
 make run             # jalankan server
 make build           # build ke bin/api
 make test            # go test ./...
+make test-integration # test integrasi Postgres (butuh TEST_DATABASE_URL)
 make vet             # go vet ./...
 make lint            # golangci-lint (termasuk aturan layer depguard)
 make fmt             # gofmt

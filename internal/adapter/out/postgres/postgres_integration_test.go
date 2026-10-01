@@ -14,21 +14,33 @@ import (
 	"elvan-catalog-api/internal/domain"
 )
 
-// Test integrasi ini berjalan terhadap PostgreSQL nyata memakai DATABASE_URL.
-// Setiap test berjalan di dalam satu transaksi yang SELALU di-rollback, jadi
-// data di database tidak pernah berubah. Bila DATABASE_URL tidak diset,
-// test dilewati (t.Skip) sehingga `go test ./...` tetap aman tanpa DB.
+// Test integrasi ini berjalan terhadap PostgreSQL nyata memakai
+// TEST_DATABASE_URL (lihat integrationDSN). Setiap test berjalan di dalam satu
+// transaksi yang SELALU di-rollback, jadi data di database tidak pernah
+// berubah. Bila DSN tidak diset, test dilewati (t.Skip) sehingga
+// `go test ./...` tetap aman tanpa DB.
 //
-// Jalankan:  set -a; . ./.env; set +a; go test ./internal/adapter/out/postgres/ -run Integration -v
+// Jalankan:  TEST_DATABASE_URL='postgres://...' go test ./internal/adapter/out/postgres/ -run Integration -v
+// atau:      make test-integration
 
 // errRollback menandai bahwa transaksi test sengaja dibatalkan.
 var errRollback = errors.New("rollback test")
 
+// integrationDSN mengembalikan DSN untuk test integrasi. Variabel khusus
+// TEST_DATABASE_URL diutamakan supaya test tidak diam-diam menunjuk database
+// aplikasi; DATABASE_URL hanya dipakai sebagai fallback untuk kenyamanan lokal.
+func integrationDSN() string {
+	if dsn := os.Getenv("TEST_DATABASE_URL"); dsn != "" {
+		return dsn
+	}
+	return os.Getenv("DATABASE_URL")
+}
+
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
+	dsn := integrationDSN()
 	if dsn == "" {
-		t.Skip("DATABASE_URL tidak diset; lewati test integrasi")
+		t.Skip("TEST_DATABASE_URL tidak diset; lewati test integrasi")
 	}
 	pool, err := NewPool(context.Background(), dsn, 4)
 	if err != nil {
