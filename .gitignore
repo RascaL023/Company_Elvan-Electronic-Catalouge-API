@@ -1,1 +1,13 @@
+# Personal dev notes
 .myenv
+
+# Go
+bin/
+dist/
+*.out
+coverage.*
+
+# Environment (jangan pernah commit secret)
+.env
+.env.*
+!.env.example
