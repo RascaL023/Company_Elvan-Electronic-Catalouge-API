@@ -1,0 +1,19 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "db/migrations"
+    queries: "db/queries"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "internal/adapter/out/postgres/sqlcgen"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          # id kolom uuid dipetakan ke google/uuid agar mapper mudah.
+          - db_type: "uuid"
+            go_type: "github.com/google/uuid.UUID"
+          # rating_rate numeric(2,1) -> float64 (selalu NOT NULL).
+          - db_type: "pg_catalog.numeric"
+            go_type: "float64"
