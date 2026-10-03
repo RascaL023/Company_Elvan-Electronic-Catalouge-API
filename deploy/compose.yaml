@@ -1,0 +1,102 @@
+# compose.yaml — topologi produksi satu VPS (ARCHITECTURE §15).
+#
+#   Internet ──▶ caddy (TLS otomatis)
+#                  ├── /         → file statis FE
+#                  └── /api/*    → api (:8080) ──▶ postgres:18
+#
+# Migrasi adalah langkah TERPISAH sebelum API naik (bukan saat startup):
+#
+#   docker compose up -d postgres
+#   docker compose run --rm migrate        # goose up
+#   docker compose up -d api caddy
+#
+# Image dibangun dari root repo:
+#   docker compose build
+# atau:
+#   docker build -f deploy/Dockerfile -t elvan-api:dev .
+#
+# Konfigurasi lewat env (satu berkas): salin deploy/.env.example ke deploy/.env.
+
+name: elvan
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-elvan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi}
+      POSTGRES_DB: ${POSTGRES_DB:-elvan_catalog}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-elvan} -d ${POSTGRES_DB:-elvan_catalog}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Langkah migrasi terpisah (goose up). Tidak restart otomatis; jalankan
+  # eksplisit sebelum api, sesuai ARCHITECTURE §15.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: migrate
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GOOSE_DBSTRING: "host=postgres port=5432 user=${POSTGRES_USER:-elvan} password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB:-elvan_catalog} sslmode=disable"
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      HTTP_ADDR: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: "host=postgres port=5432 user=${POSTGRES_USER:-elvan} password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB:-elvan_catalog} sslmode=disable"
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      DB_STATEMENT_TIMEOUT: ${DB_STATEMENT_TIMEOUT:-10s}
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-30s}
+      SESSION_TTL: ${SESSION_TTL:-168h}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-5/min}
+      IMAGEKIT_PRIVATE_KEY: ${IMAGEKIT_PRIVATE_KEY:-}
+      IMAGEKIT_URL_ENDPOINT: ${IMAGEKIT_URL_ENDPOINT:-}
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      SITE_EMAIL: ${SITE_EMAIL:-}
+      API_ORIGIN: api:8080
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Build output FE (hasil `npm run build` di repo FE) disalin ke sini.
+      - ./site:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

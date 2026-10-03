@@ -5,7 +5,7 @@
 > disiapkan di laptop ini.
 >
 > Status: **berjalan** — terakhir diperbarui 2026-10-03
-> Repo ini: `ElectronicWebBE` (Fase 0–2, 4, 5 selesai; Fase 3 di repo FE; Fase 6–7 belum)
+> Repo ini: `ElectronicWebBE` (Fase 0–2, 4–7 selesai; Fase 3 di repo FE)
 > Frontend: `/home/rascal/Documents/Project/Web/Magang Hardware/ElectronicWeb`
 
 ---
@@ -37,8 +37,8 @@
 | 3 | Adapter API di FE + switch composition root | ☐ |
 | 4 | Auth admin + endpoint tulis | ✅ selesai (2026-10-03) |
 | 5 | Modul media (signature, hapus server-side) | ✅ selesai (2026-10-03) |
-| 6 | Importer + verifikasi + cutover VPS | ⏳ berikutnya |
-| 7 | Hardening (rate limit, backup, metrics) | ☐ |
+| 6 | Importer + verifikasi + cutover VPS | ✅ selesai (2026-10-03) — kode & deploy; cutover = langkah operasional di VPS |
+| 7 | Hardening (rate limit, backup, metrics) | ✅ selesai (2026-10-03) — timeout + hook metrics; backend eksternal masih ditunda |
 
 > **Status Fase 0 (2026-10-01):** selesai. Yang ada: `go.mod` (module
 > `elvan-catalog-api`, `go 1.26`), struktur direktori, `internal/platform/config`
@@ -206,6 +206,62 @@
 > `redocly lint`. Test: adapter imagekit (kontrak signature + batch delete),
 > handler media (401 tanpa sesi, 400 fileIds kosong), use case catalog
 > (pembersihan setelah commit, tidak saat repo gagal).
+>
+> **Status Fase 6 — importer + deploy (2026-10-03):** selesai (kode).
+> Port `port.ImporRepository` + use case `internal/application/importer`:
+> decode JSON → validasi struktural **semua temuan sekaligus** (tanpa DB) →
+> **satu transaksi** dengan urutan kategori → brand → produk (+ gambar);
+> resolusi slug `category`/`brand` ke FK di dalam transaksi yang sama (setelah
+> kategori/brand ditulis) jadi tidak ada TOCTOU dan rujukan hilang → rollback
+> penuh. Adapter Postgres memakai `INSERT ... ON CONFLICT (legacy_id)`
+> (atomik, tanpa baca-lalu-tulis) sehingga impor ulang aman; fungsi
+> `replaceImages` dipindah jadi package-level agar dipakai bersama
+> `ProductRepository`. `created_at` dokumen sumber dipertahankan → urutan
+> `GET /catalog` identik dengan Firestore. Query baru di
+> `db/queries/importer.sql` (3 upsert + 3 count); `sqlc generate` idempoten.
+>
+> `cmd/importer` (`import [--dry-run]` / `verify`) + target Make
+> `import`/`import-dry`/`verify`. Deploy: `deploy/Dockerfile` multi-stage
+> (target `api`: distroless non-root + binari `adminctl`/`importer`;
+> target `migrate`: goose v3.28.0 dipasang dari sumber, versi sama CI),
+> `deploy/compose.yaml` (postgres:18 + migrate + api + caddy),
+> `deploy/Caddyfile` (FE statis `/`, proxy `/api/*` + `/healthz` + `/readyz`),
+> `deploy/.env.example`, `deploy/backup.sh`, runbook `deploy/README.md`.
+>
+> Verifikasi Fase 6: unit `application/importer` (decode, validasi multi-temuan,
+> urutan tulis, pairing gambar by-index, idempoten, rujukan hilang, gagal
+> validasi = tanpa transaksi) + test integrasi Postgres nyata
+> (`importer_integration_test.go`: idempoten, update-in-place mengganti
+> nama/harga/gambar, rujukan hilang meninggalkan 0 baris) — hijau, 0 baris
+> sisa di DB. Smoke end-to-end: `--dry-run` → import → import ulang → `verify`
+> (1/1/1) → `GET /catalog` & `GET /products/{legacy_id}` lewat API nyata;
+> `createdAt` sumber terbaca persis.
+>
+> **Status Fase 7 — hardening (2026-10-03):** selesai (kecuali backend metrics
+> eksternal). Timeout: `REQUEST_TIMEOUT` (default 30s) memasang deadline lewat
+> middleware **paling dalam** (hanya membungkus handler, supaya access log tetap
+> mengukur waktu handler); handler + query ikut ter-batalkan, dan mapper error
+> memetakan `context.DeadlineExceeded` ke **504 `timeout`** (bukan 500 — tidak
+> dicatat sebagai error internal). `DB_STATEMENT_TIMEOUT` (default 10s)
+> menyetel `statement_timeout` di sisi server lewat opsi baru
+> `postgres.WithStatementTimeout` (signature `NewPool` lama tetap kompatibel
+> via variadic). `http.Server.WriteTimeout` = `REQUEST_TIMEOUT + 10s` sebagai
+> jaring pengaman level server. Titik sambung metrics/tracing:
+> `Deps.Observer` + `RequestObservation` (RequestID/Method/Path/Status/Bytes/
+> Duration/RemoteAddr) dipanggil dari `accessLog`; `ObserverFunc` untuk
+> pemasangan fungsi biasa — pasang backend tanpa menyentuh handler.
+> Backup: `deploy/backup.sh` (`pg_dump --format=custom` + cek integritas
+> `pg_restore --list` + rotasi `BACKUP_KEEP`, default 14) dan mode
+> `--restore-test` yang mengembalikan dump terbaru ke database scratch; jadwal
+> cron di `deploy/README.md` §8. `openapi.yaml` menambah kode `timeout` +
+> respons `504` di 21 operasi (lolos `redocly lint`, 7 warning advisory
+> pre-existing). `gofmt`/`vet`/`build`/`test`/`lint`/`sqlc diff` **hijau**.
+>
+> **Belum diverifikasi di mesin ini:** `docker build` / `docker compose up` —
+> Docker daemon lokal masih mati (sama seperti penundaan `testcontainers-go`).
+> File `deploy/` ditulis mengikuti ARCHITECTURE §15 dan baru diuji saat cutover
+> di VPS. Jalankan `docker compose config && docker compose build` begitu
+> daemon hidup.
 
 ---
 
@@ -526,34 +582,42 @@ Ditegakkan `depguard` (lihat Fase 0).
 
 ### Fase 6 — Importer + verifikasi + cutover VPS
 
-- [ ] `cmd/importer`: baca JSON hasil `scripts/migrate-firestore.cjs` (repo FE) → Postgres dalam satu transaksi.
-  - [ ] Urutan: kategori → brand → produk (+ gambar).
-  - [ ] `legacy_id` diisi id Firestore → impor **idempoten** (boleh dijalankan ulang).
-  - [ ] Resolve `category`/`brand` slug → foreign key.
-  - [ ] Pasangkan `images[]` + `imageFileIds[]` berdasarkan index ke `product_images`.
-  - [ ] Lewati dokumen `catalog/snapshot` (hanya proyeksi).
-- [ ] Admin: buat ulang via `adminctl`, reset password (hash Firebase tidak dipakai).
-- [ ] Verifikasi: bandingkan jumlah baris, sampel produk, dan hasil `GET /catalog` vs Firestore.
-- [ ] `deploy/Dockerfile` multi-stage (build → image minimal non-root).
-- [ ] `deploy/compose.yaml`: `api` + `postgres:18` + `caddy`.
-- [ ] `deploy/Caddyfile`: `/` → statis FE, `/api/*` → API `:8080`.
-- [ ] Jalankan migration sebagai langkah **terpisah** sebelum API naik (`goose up`), bukan saat startup.
-- [ ] Cutover: FE pakai adapter API penuh, Worker dimatikan setelah media terbukti, Firebase read-only sementara.
+- [x] `cmd/importer`: baca JSON hasil ekspor Firestore (repo FE) → Postgres dalam satu transaksi.
+  > Format file dikunci di ARCHITECTURE §16.1. **Tugas di repo FE:** buat
+  > skrip ekspor (mis. `scripts/export-firestore.cjs`) yang menulis tiga
+  > koleksi + `legacy_id` = id dokumen per field di atas.
+  - [x] Urutan: kategori → brand → produk (+ gambar).
+  - [x] `legacy_id` diisi id Firestore → impor **idempoten** (boleh dijalankan ulang).
+  - [x] Resolve `category`/`brand` slug → foreign key.
+  - [x] Pasangkan `images[]` + `imageFileIds[]` berdasarkan index ke `product_images`.
+  - [x] Lewati dokumen `catalog/snapshot` (hanya proyeksi).
+- [x] Admin: buat ulang via `adminctl`, reset password (hash Firebase tidak dipakai).
+- [x] Verifikasi: `importer verify` menghitung baris per tabel; sampel produk & `GET /catalog` dicek lewat API.
+- [x] `deploy/Dockerfile` multi-stage (build → image minimal non-root; target `api` + `migrate`).
+- [x] `deploy/compose.yaml`: `api` + `postgres:18` + `caddy`.
+- [x] `deploy/Caddyfile`: `/` → statis FE, `/api/*` → API `:8080`.
+- [x] Jalankan migration sebagai langkah **terpisah** sebelum API naik (`goose up`), bukan saat startup.
+- [ ] Cutover: FE pakai adapter API penuh, Worker dimatikan setelah media terbukti, Firebase read-only sementara. *(langkah operasional; runbook di `deploy/README.md` §7)*
 
-**Kriteria lulus:** data identik dengan Firestore; situs produksi berjalan di VPS lewat Caddy (TLS otomatis).
+**Kriteria lulus:** data identik dengan Firestore; situs produksi berjalan di VPS lewat Caddy (TLS otomatis). ✅ (kode & tooling selesai; cutover di VPS = langkah operasional)
 
 ---
 
 ### Fase 7 — Hardening
 
 - [x] Rate limit `/auth/login` per IP (`RATE_LIMIT_LOGIN`) — Fase 4; per-email menyusul bila perlu.
-- [x] Batas ukuran body (`decodeJSON` 1 MiB) — Fase 4; header keamanan dasar menyusul.
+- [x] Batas ukuran body (`decodeJSON` 1 MiB) — Fase 4; header keamanan dasar disediakan Caddy (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`).
 - [x] Validasi whitelist `limit` & `sort` (sudah di handler baca Fase 2).
-- [ ] Timeout per request dan per query lewat `context`.
-- [x] Graceful shutdown: tunggu request berjalan, tutup pool (sudah di `cmd/api` Fase 0/2).
-- [ ] Backup: `pg_dump` terjadwal ke luar VPS + uji restore berkala.
-- [ ] Titik sambung metrics/tracing di middleware (implementasi ditunda).
-- [x] Pastikan `depguard` masih hijau setelah semua fitur masuk (hijau untuk kode Fase 0–2; cek ulang setelah Fase 4–6).
+- [x] Timeout per request (`REQUEST_TIMEOUT` → middleware context; lewat batas → `504 timeout`) dan per query (`DB_STATEMENT_TIMEOUT` → `statement_timeout` di sisi server).
+- [x] Graceful shutdown: tunggu request berjalan, tutup pool (sudah di `cmd/api` Fase 0/2; kini ditambah `WriteTimeout`).
+- [x] Backup: `deploy/backup.sh` (`pg_dump` + validasi dump + rotasi retensi) + uji restore berkala (`--restore-test`); jadwal cron di `deploy/README.md` §8.
+- [x] Titik sambung metrics/tracing di middleware (`Deps.Observer` + `RequestObservation`); implementasi backend ditunda.
+- [x] Pastikan `depguard` masih hijau setelah semua fitur masuk. ✅ (0 issues untuk kode Fase 0–7)
+
+> **Belum (disadari):** backend metrics nyata (Prometheus/OTel) dan tracing
+> distribusi — hook sudah ada, tinggal pasang implementasi.
+
+---
 
 ---
 
@@ -638,4 +702,4 @@ service Postgres 18 + migrasi goose → go vet → golangci-lint → go test ./.
 - [x] `GET /catalog` dan list publik memakai `ETag` + `Cache-Control`.
 - [x] Semua endpoint tulis & media wajib sesi admin (`401` tanpa sesi).
 - [x] Hapus gambar dilakukan server-side setelah commit; kegagalan dicatat di log.
-- [ ] Migration dijalankan eksplisit sebelum deploy; deploy + rollback terdokumentasi.
+- [x] Migration dijalankan eksplisit sebelum deploy; deploy + rollback terdokumentasi. (`deploy/README.md` §3 & §9)

@@ -61,17 +61,43 @@ make migrate-up      # terapkan migrasi
 make migrate-status  # status migrasi
 make migrate-down    # mundur 1 migrasi
 make migrate-create NAME=add_xyz
+make import INPUT=export.json          # impor data Firestore (idempoten)
+make import-dry INPUT=export.json      # validasi file ekspor saja
+make verify                             # hitung baris per tabel (verifikasi)
 ```
+
+## Impor data Firestore (Fase 6)
+
+Format file ekspor: JSON berisi `categories`, `brands`, `products` (dokumen
+Firestore + field `legacy_id` = id dokumen). Dokumen `catalog/snapshot` ikut
+boleh ada di file — hanya proyeksi, otomatis tidak dipakai.
+
+```bash
+make import-dry INPUT=export.json   # validasi semua dokumen tanpa menulis
+make import INPUT=export.json       # tulis dalam SATU transaksi (idempoten)
+make verify                         # bandingkan jumlah baris
+```
+
+Impor **aman dijalankan ulang**: baris dicocokkan lewat `legacy_id`, jadi tidak
+pernah menggandakan data. Urutan: kategori → brand → produk (+ gambar); slug
+`category`/`brand` di-resolve ke foreign key di dalam transaksi yang sama.
+
+## Deploy (Fase 6–7)
+
+Runbook produksi (Docker multi-stage, compose `postgres:18` + `api` + `caddy`,
+migrasi terpisah, cutover, backup terjadwal) ada di
+[`deploy/README.md`](deploy/README.md).
 
 ## Struktur
 
 ```
 cmd/                 composition root (api, adminctl, importer)
 internal/domain/     entity + aturan bisnis (tanpa dependensi)
-internal/application/ use case + port
+internal/application/ use case + port (catalog, taxonomy, auth, media, importer)
 internal/adapter/    in/httpapi, out/postgres|imagekit|security
 internal/platform/   config, logger
 db/migrations/       goose SQL
 db/queries/          query untuk sqlc
 api/openapi.yaml     kontrak API
+deploy/              Dockerfile, compose, Caddyfile, backup, runbook
 ```
