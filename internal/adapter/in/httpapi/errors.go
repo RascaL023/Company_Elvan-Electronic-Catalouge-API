@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -18,6 +19,7 @@ const (
 	codeNotFound         = "not_found"
 	codeConflict         = "conflict"
 	codeRateLimited      = "rate_limited"
+	codeTimeout          = "timeout"
 	codeInternal         = "internal"
 )
 
@@ -93,6 +95,13 @@ func writeError(w http.ResponseWriter, log *slog.Logger, r *http.Request, err er
 		status = http.StatusTooManyRequests
 		code = codeRateLimited
 		message = "Terlalu banyak percobaan; coba lagi nanti"
+
+	case errors.Is(err, context.DeadlineExceeded):
+		// Request/query melewati REQUEST_TIMEOUT / DB_STATEMENT_TIMEOUT.
+		// Bukan bug server, jadi tidak dicatat sebagai error internal.
+		status = http.StatusGatewayTimeout
+		code = codeTimeout
+		message = "Permintaan memakan waktu terlalu lama; coba lagi"
 
 	case errors.Is(err, errForbiddenRequest):
 		status = http.StatusForbidden

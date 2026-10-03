@@ -60,7 +60,9 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns,
+		postgres.WithStatementTimeout(cfg.DBStatementTimeout),
+	)
 	if err != nil {
 		return err
 	}
@@ -120,10 +122,11 @@ func run() error {
 			SameSite: cookieSameSite(cfg.CookieSameSite),
 			Secure:   cfg.CookieSecure,
 		},
-		LoginLimit: loginLimit,
-		Ready:      func(ctx context.Context) error { return postgres.Healthcheck(ctx, pool) },
-		Log:        log,
-		CORS:       httpapi.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins},
+		LoginLimit:     loginLimit,
+		Ready:          func(ctx context.Context) error { return postgres.Healthcheck(ctx, pool) },
+		RequestTimeout: cfg.RequestTimeout,
+		Log:            log,
+		CORS:           httpapi.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins},
 	})
 
 	srv := &http.Server{
@@ -131,6 +134,9 @@ func run() error {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		// Batas atas di level server: walau ada handler yang mengabaikan
+		// context, server tetap berhenti menulis pada waktunya (Fase 7).
+		WriteTimeout: cfg.RequestTimeout + 10*time.Second,
 	}
 
 	errCh := make(chan error, 1)

@@ -16,6 +16,10 @@ import (
 
 const readinessTimeout = 2 * time.Second
 
+// defaultRequestTimeout dipakai bila Deps.RequestTimeout tidak diset (mis. pada
+// test handler yang tidak membutuhkannya).
+const defaultRequestTimeout = 30 * time.Second
+
 // CatalogReader adalah bagian use case katalog yang dipakai adapter HTTP.
 // Didefinisikan di sisi konsumen agar handler mudah diuji dengan fake.
 type CatalogReader interface {
@@ -52,6 +56,12 @@ type Deps struct {
 	Ready          Readiness
 	Log            *slog.Logger
 	CORS           CORSConfig
+	// RequestTimeout membatasi waktu proses per request lewat context (Fase 7).
+	// Nol berarti memakai defaultRequestTimeout; negatif mematikan timeout
+	// (hanya untuk test).
+	RequestTimeout time.Duration
+	// Observer adalah titik sambung metrics/tracing (Fase 7); nil = mati.
+	Observer Observer
 }
 
 type handlers struct {
@@ -102,9 +112,16 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("DELETE /api/v1/media/files", h.requireAdmin(http.HandlerFunc(h.mediaDeleteFiles)))
 
 	var handler http.Handler = mux
+	// Timeout paling dalam: hanya membungkus handler (bukan logging/CORS)
+	// supaya waktu yang dihitung access log tetap waktu handler yang sesungguhnya.
+	reqTimeout := d.RequestTimeout
+	if reqTimeout == 0 {
+		reqTimeout = defaultRequestTimeout
+	}
+	handler = timeout(reqTimeout)(handler)
 	handler = originGuard(d.CORS.AllowedOrigins)(handler)
 	handler = cors(d.CORS)(handler)
-	handler = accessLog(d.Log)(handler)
+	handler = accessLog(d.Log, d.Observer)(handler)
 	handler = requestID(handler)
 	handler = recoverer(d.Log)(handler)
 	return handler

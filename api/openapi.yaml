@@ -105,6 +105,8 @@ paths:
           $ref: '#/components/responses/NotModified'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/products:
     get:
@@ -165,6 +167,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     post:
       tags: [Products]
       operationId: createProduct
@@ -199,6 +203,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/products/{id}:
     get:
@@ -252,6 +258,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     patch:
       tags: [Products]
       operationId: updateProduct
@@ -289,6 +297,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     delete:
       tags: [Products]
       operationId: deleteProduct
@@ -313,6 +323,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/categories:
     get:
@@ -337,6 +349,8 @@ paths:
           $ref: '#/components/responses/NotModified'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     post:
       tags: [Categories]
       operationId: createCategory
@@ -369,6 +383,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/categories/{id}:
     get:
@@ -390,6 +406,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     patch:
       tags: [Categories]
       operationId: updateCategory
@@ -424,6 +442,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     delete:
       tags: [Categories]
       operationId: deleteCategory
@@ -450,6 +470,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/brands:
     get:
@@ -474,6 +496,8 @@ paths:
           $ref: '#/components/responses/NotModified'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     post:
       tags: [Brands]
       operationId: createBrand
@@ -506,6 +530,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/brands/{id}:
     get:
@@ -527,6 +553,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     patch:
       tags: [Brands]
       operationId: updateBrand
@@ -561,6 +589,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
     delete:
       tags: [Brands]
       operationId: deleteBrand
@@ -587,6 +617,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/auth/login:
     post:
@@ -627,6 +659,8 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/auth/logout:
     post:
@@ -644,6 +678,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/auth/me:
     get:
@@ -669,6 +705,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/media/signature:
     get:
@@ -698,6 +736,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
   /api/v1/media/files:
     delete:
@@ -735,6 +775,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+        '504':
+          $ref: '#/components/responses/Timeout'
 
 components:
   schemas:
@@ -1049,6 +1091,7 @@ components:
                 - not_found
                 - conflict
                 - rate_limited
+                - timeout
                 - internal
             message:
               type: string
@@ -1289,6 +1332,20 @@ components:
             error:
               code: internal
               message: Terjadi kesalahan internal
+
+    Timeout:
+      description: |-
+        Permintaan melewati batas waktu (`REQUEST_TIMEOUT`, default 30 detik)
+        atau query melewati `DB_STATEMENT_TIMEOUT`. Bukan kegagalan data:
+        klien boleh mencoba ulang.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: timeout
+              message: Permintaan memakan waktu terlalu lama; coba lagi
 
   # Sesi dibawa cookie HttpOnly. `bearerTransport` (Authorization: Bearer)
   # belum dibangun; lihat ARCHITECTURE §10.
