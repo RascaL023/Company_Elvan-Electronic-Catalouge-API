@@ -27,13 +27,14 @@ func TestIntegrationProductCreateAtomicOnImageFailure(t *testing.T) {
 	ctx := context.Background()
 	cats := NewCategoryRepository(pool)
 	products := NewProductRepository(pool, nil)
-	svc := catalog.New(products, cats, NewBrandRepository(pool), NewTxManager(pool), nil)
+	svc := catalog.New(products, cats, NewBrandRepository(pool), NewTxManager(pool), nil, nil)
 
 	suffix := uuid.NewString()[:8]
 	cat, err := cats.Create(ctx, domain.Category{Name: "Kat Atomic", Slug: "it-atomic-cat-" + suffix})
 	if err != nil {
 		t.Fatalf("seed kategori: %v", err)
 	}
+
 	slug := "it-atomic-prod-" + suffix
 	cleanupFixtures(t, pool, ctx, slug, cat.ID, "")
 
@@ -59,13 +60,14 @@ func TestIntegrationProductUpdateAtomicOnImageFailure(t *testing.T) {
 	ctx := context.Background()
 	cats := NewCategoryRepository(pool)
 	products := NewProductRepository(pool, nil)
-	svc := catalog.New(products, cats, NewBrandRepository(pool), NewTxManager(pool), nil)
+	svc := catalog.New(products, cats, NewBrandRepository(pool), NewTxManager(pool), nil, nil)
 
 	suffix := uuid.NewString()[:8]
 	cat, err := cats.Create(ctx, domain.Category{Name: "Kat Atomic", Slug: "it-atomic-cat-" + suffix})
 	if err != nil {
 		t.Fatalf("seed kategori: %v", err)
 	}
+
 	slug := "it-atomic-prod-" + suffix
 	cleanupFixtures(t, pool, ctx, slug, cat.ID, "")
 

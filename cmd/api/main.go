@@ -15,10 +15,12 @@ import (
 	"time"
 
 	"elvan-catalog-api/internal/adapter/in/httpapi"
+	"elvan-catalog-api/internal/adapter/out/imagekit"
 	"elvan-catalog-api/internal/adapter/out/postgres"
 	"elvan-catalog-api/internal/adapter/out/security"
 	"elvan-catalog-api/internal/application/auth"
 	"elvan-catalog-api/internal/application/catalog"
+	"elvan-catalog-api/internal/application/media"
 	"elvan-catalog-api/internal/application/taxonomy"
 	"elvan-catalog-api/internal/platform/clock"
 	"elvan-catalog-api/internal/platform/config"
@@ -72,7 +74,22 @@ func run() error {
 	sessionRepo := postgres.NewSessionRepository(pool)
 	txManager := postgres.NewTxManager(pool)
 
-	catalogService := catalog.New(productRepo, categoryRepo, brandRepo, txManager, log)
+	// Media hanya aktif bila kredensial ImageKit tersedia. Tanpa itu, catalog
+	// tetap berjalan dan gambar terlepas hanya dicatat di log. Interface dibiarkan
+	// nil (bukan typed-nil) agar pemeriksaan `== nil` di use case dan router benar.
+	var (
+		cleaner     catalog.ImageCleaner
+		mediaIssuer httpapi.MediaIssuer
+	)
+	if cfg.ImageKitPrivateKey != "" {
+		mediaService := media.New(imagekit.New(cfg.ImageKitPrivateKey), log)
+		cleaner = mediaService
+		mediaIssuer = mediaService
+	} else {
+		log.Warn("IMAGEKIT_PRIVATE_KEY kosong; endpoint media dinonaktifkan")
+	}
+
+	catalogService := catalog.New(productRepo, categoryRepo, brandRepo, txManager, cleaner, log)
 	taxonomyService := taxonomy.New(categoryRepo, brandRepo, log)
 
 	authService := auth.New(
@@ -97,6 +114,7 @@ func run() error {
 		Taxonomy:       taxonomyService,
 		TaxonomyWriter: taxonomyService,
 		Auth:           authService,
+		Media:          mediaIssuer,
 		Transport: httpapi.CookieTransport{
 			Domain:   cfg.CookieDomain,
 			SameSite: cookieSameSite(cfg.CookieSameSite),

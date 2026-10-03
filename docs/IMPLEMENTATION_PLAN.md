@@ -5,7 +5,7 @@
 > disiapkan di laptop ini.
 >
 > Status: **berjalan** — terakhir diperbarui 2026-10-03
-> Repo ini: `ElectronicWebBE` (Fase 0–2 & 4 selesai; Fase 3 di repo FE; Fase 5–7 belum)
+> Repo ini: `ElectronicWebBE` (Fase 0–2, 4, 5 selesai; Fase 3 di repo FE; Fase 6–7 belum)
 > Frontend: `/home/rascal/Documents/Project/Web/Magang Hardware/ElectronicWeb`
 
 ---
@@ -36,8 +36,8 @@
 | 2 | Jalur baca publik (katalog, produk, kategori, brand) | ✅ selesai (2026-10-01) |
 | 3 | Adapter API di FE + switch composition root | ☐ |
 | 4 | Auth admin + endpoint tulis | ✅ selesai (2026-10-03) |
-| 5 | Modul media (signature, hapus server-side) | ⏳ berikutnya |
-| 6 | Importer + verifikasi + cutover VPS | ☐ |
+| 5 | Modul media (signature, hapus server-side) | ✅ selesai (2026-10-03) |
+| 6 | Importer + verifikasi + cutover VPS | ⏳ berikutnya |
 | 7 | Hardening (rate limit, backup, metrics) | ☐ |
 
 > **Status Fase 0 (2026-10-01):** selesai. Yang ada: `go.mod` (module
@@ -187,6 +187,25 @@
 > lolos `redocly lint`. Test unit (security, auth, taxonomy, adminctl, HTTP
 > handler) + integrasi `auth_integration_test.go` (alur login, hash tersimpan,
 > reset password, prune sesi) hijau; `gofmt`/`vet`/`build`/`test`/lint bersih.
+>
+> **Status Fase 5 — modul media (2026-10-03):** selesai. Adapter
+> `internal/adapter/out/imagekit` memindahkan logika Worker: `IssueUploadSignature`
+> (`token = uuid`, `expire = now + 30m`, `signature = HMAC-SHA1(privateKey,
+> token + expire)` hex) dan `Delete` (batch `POST
+> /v1/files/batch/deleteByFileIds`, maks 100 id/request, Basic auth private key,
+> duplikat/id kosong dibuang, id yang tidak dilaporkan berhasil masuk `failed`).
+> Use case `internal/application/media` menerbitkan tanda tangan dan menghapus
+> berkas (kegagalan dicatat di log, tidak membatalkan DB). Endpoint baru
+> `GET /api/v1/media/signature` dan `DELETE /api/v1/media/files` (transisi),
+> keduanya wajib sesi admin. Pembersihan **server-side** kini dilakukan use case
+> `catalog`: `Update` mencatat `fileId` lama yang tidak lagi dipakai lalu
+> memanggil cleaner **setelah commit**; `Delete` membersihkan seluruh gambar
+> produk. Gambar tanpa `fileId` dilewati; `cleaner` nil (media belum
+> dikonfigurasi) hanya dicatat di log. `openapi.yaml` diperluas (tag `Media`,
+> skema `UploadSignature`/`DeleteFilesRequest`/`DeleteResult`) dan lolos
+> `redocly lint`. Test: adapter imagekit (kontrak signature + batch delete),
+> handler media (401 tanpa sesi, 400 fileIds kosong), use case catalog
+> (pembersihan setelah commit, tidak saat repo gagal).
 
 ---
 
@@ -490,18 +509,18 @@ Ditegakkan `depguard` (lihat Fase 0).
 
 ### Fase 5 — Modul media
 
-**Hasil:** Cloudflare Worker bisa dimatikan.
+**Hasil:** Cloudflare Worker bisa dimatikan. ✅ (jalur BE; penyesuaian FE di repo FE)
 
-- [ ] `internal/adapter/out/imagekit/`:
-  - [ ] `IssueUploadSignature`: `token = uuid`, `expire = now + 30m`, `signature = HMAC-SHA1(privateKey, token + expire)` (sama persis kontrak Worker).
-  - [ ] `Delete`: batch `POST /v1/files/batch/deleteByFileIds`, maks 100 id/request, kembalikan `{ deleted, failed }`.
-  - [ ] Private key **hanya** dari config server.
-- [ ] `internal/application/media/`: `IssueUploadSignature`, `DeleteImages`.
-- [ ] Endpoint: `GET /api/v1/media/signature` (wajib sesi admin — **bukan** cek `Origin` saja), `DELETE /api/v1/media/files` (transisi).
-- [ ] Hapus gambar **server-side**: saat produk dihapus atau gambar dilepas via `PATCH`, kumpulkan `fileId` lepas lalu panggil `Delete` **setelah commit** (best-effort, dicatat di log). `fileId` kosong (gambar lama) dilewati.
-- [ ] FE: arahkan `VITE_IMAGEKIT_AUTH_ENDPOINT` ke `.../api/v1/media/signature`; hentikan pemanggilan delete klien (`useDeleteProduct.ts`, `ProductForm.tsx`) pada jalur API.
+- [x] `internal/adapter/out/imagekit/`:
+  - [x] `IssueUploadSignature`: `token = uuid`, `expire = now + 30m`, `signature = HMAC-SHA1(privateKey, token + expire)` (sama persis kontrak Worker).
+  - [x] `Delete`: batch `POST /v1/files/batch/deleteByFileIds`, maks 100 id/request, kembalikan `{ deleted, failed }`; duplikat & id kosong dibuang, id yang tidak dilaporkan berhasil masuk `failed`.
+  - [x] Private key **hanya** dari config server.
+- [x] `internal/application/media/`: `IssueUploadSignature`, `DeleteImages`.
+- [x] Endpoint: `GET /api/v1/media/signature` (wajib sesi admin — **bukan** cek `Origin` saja), `DELETE /api/v1/media/files` (transisi).
+- [x] Hapus gambar **server-side**: saat produk dihapus atau gambar dilepas via `PATCH`, kumpulkan `fileId` lepas lalu panggil `Delete` **setelah commit** (best-effort, dicatat di log). `fileId` kosong (gambar lama) dilewati.
+- [ ] FE: arahkan `VITE_IMAGEKIT_AUTH_ENDPOINT` ke `.../api/v1/media/signature`; hentikan pemanggilan delete klien (`useDeleteProduct.ts`, `ProductForm.tsx`) pada jalur API. *(repo FE)*
 
-**Kriteria lulus:** admin upload gambar lewat BE (signature), hapus produk membersihkan file di ImageKit tanpa file yatim; tanpa sesi → `401`.
+**Kriteria lulus:** admin upload gambar lewat BE (signature), hapus produk membersihkan file di ImageKit tanpa file yatim; tanpa sesi → `401`. ✅ (diverifikasi unit adapter + httptest handler; pembersihan diuji di use case catalog)
 
 ---
 
@@ -617,6 +636,6 @@ service Postgres 18 + migrasi goose → go vet → golangci-lint → go test ./.
 - [x] `openapi.yaml` sinkron dengan handler baca. *(endpoint tulis/auth sudah; media menyusul)*
 - [x] Tidak ada secret di repo (semua dari env yang divalidasi saat startup).
 - [x] `GET /catalog` dan list publik memakai `ETag` + `Cache-Control`.
-- [x] Semua endpoint tulis wajib sesi admin (`401` tanpa sesi). *(media menyusul di Fase 5)*
-- [ ] Hapus gambar dilakukan server-side setelah commit; kegagalan dicatat di log. *(Fase 5)*
+- [x] Semua endpoint tulis & media wajib sesi admin (`401` tanpa sesi).
+- [x] Hapus gambar dilakukan server-side setelah commit; kegagalan dicatat di log.
 - [ ] Migration dijalankan eksplisit sebelum deploy; deploy + rollback terdokumentasi.

@@ -47,6 +47,7 @@ type Deps struct {
 	TaxonomyWriter TaxonomyWriter
 	Auth           Authenticator
 	Transport      SessionTransport
+	Media          MediaIssuer
 	LoginLimit     RateLimit
 	Ready          Readiness
 	Log            *slog.Logger
@@ -95,6 +96,10 @@ func NewRouter(d Deps) http.Handler {
 	mux.Handle("POST /api/v1/brands", h.requireAdmin(http.HandlerFunc(h.createBrand)))
 	mux.Handle("PATCH /api/v1/brands/{id}", h.requireAdmin(http.HandlerFunc(h.updateBrand)))
 	mux.Handle("DELETE /api/v1/brands/{id}", h.requireAdmin(http.HandlerFunc(h.deleteBrand)))
+
+	// Media (admin). Signature upload + hapus berkas eksplisit (transisi).
+	mux.Handle("GET /api/v1/media/signature", h.requireAdmin(http.HandlerFunc(h.mediaSignature)))
+	mux.Handle("DELETE /api/v1/media/files", h.requireAdmin(http.HandlerFunc(h.mediaDeleteFiles)))
 
 	var handler http.Handler = mux
 	handler = originGuard(d.CORS.AllowedOrigins)(handler)

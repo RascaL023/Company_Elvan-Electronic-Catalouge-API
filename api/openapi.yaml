@@ -9,8 +9,9 @@ info:
     Kontrak API katalog elektronik Elvan Electronic. Dokumen ini adalah sumber
     kebenaran kontrak antara backend (Go) dan frontend (React).
 
-    Cakupan versi ini (Fase 4): **jalur baca publik** + **auth admin** +
-    **endpoint tulis** produk/kategori/brand. Modul media menyusul di Fase 5.
+    Cakupan versi ini (Fase 5): **jalur baca publik** + **auth admin** +
+    **endpoint tulis** produk/kategori/brand + **modul media** (tanda tangan
+    upload & hapus berkas).
 
     Konvensi:
     - JSON `camelCase`, waktu ISO-8601 UTC dengan milidetik (`.000Z`),
@@ -47,6 +48,8 @@ tags:
     description: Brand
   - name: Auth
     description: Sesi admin (login, logout, sesi saat ini)
+  - name: Media
+    description: Tanda tangan upload ImageKit & penghapusan berkas
 
 paths:
   /healthz:
@@ -667,6 +670,72 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /api/v1/media/signature:
+    get:
+      tags: [Media]
+      operationId: issueUploadSignature
+      summary: Tanda tangan upload ImageKit
+      description: |
+        Hanya admin. Mengembalikan `{ token, expire, signature }` (kontrak sama
+        persis dengan Worker lama: `signature = HMAC-SHA1(privateKey, token +
+        expire)`). Browser memakai nilai ini untuk mengunggah **langsung** ke
+        ImageKit; berkas tidak pernah melewati server. Bila modul media tidak
+        dikonfigurasi (private key kosong), endpoint mengembalikan `404`.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Tanda tangan upload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadSignature'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/media/files:
+    delete:
+      tags: [Media]
+      operationId: deleteMediaFiles
+      summary: Hapus berkas gambar (transisi)
+      description: |
+        Hanya admin. Menghapus berkas berdasarkan `fileId` di provider. Endpoint
+        ini dipertahankan sementara untuk kompatibilitas FE selama transisi ke
+        pembersihan server-side (penghapusan otomatis dilakukan server saat
+        produk dihapus atau gambar dilepas); akan dihapus setelah FE berhenti
+        memanggilnya.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteFilesRequest'
+      responses:
+        '200':
+          description: Hasil penghapusan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
 components:
   schemas:
     Rating:
@@ -816,6 +885,42 @@ components:
         expiresAt:
           type: string
           format: date-time
+
+    UploadSignature:
+      type: object
+      description: |
+        Tanda tangan upload ImageKit; diteruskan apa adanya ke SDK/HTTP ImageKit.
+      required: [token, expire, signature]
+      properties:
+        token: { type: string }
+        expire:
+          type: integer
+          format: int64
+          description: Unix time kedaluwarsa (30 menit sejak diterbitkan).
+        signature:
+          type: string
+          description: HMAC-SHA1 hex dari `token + expire` memakai private key server.
+
+    DeleteFilesRequest:
+      type: object
+      required: [fileIds]
+      properties:
+        fileIds:
+          type: array
+          minItems: 1
+          items: { type: string }
+
+    DeleteResult:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: integer
+          description: Jumlah berkas yang berhasil dihapus.
+        failed:
+          type: array
+          description: fileId yang gagal dihapus (bila ada).
+          items: { type: string }
 
     LoginRequest:
       type: object
