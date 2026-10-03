@@ -13,4 +13,7 @@ type PasswordHasher interface {
 // mentah (dikirim ke klien) dan hash-nya (disimpan di DB).
 type TokenGenerator interface {
 	Generate() (token string, hash []byte, err error)
+	// Hash menghitung hash yang disimpan untuk token mentah, dipakai saat
+	// mencari sesi dari token yang datang di permintaan berikutnya.
+	Hash(token string) []byte
 }

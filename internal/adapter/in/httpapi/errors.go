@@ -17,7 +17,15 @@ const (
 	codeForbidden        = "forbidden"
 	codeNotFound         = "not_found"
 	codeConflict         = "conflict"
+	codeRateLimited      = "rate_limited"
 	codeInternal         = "internal"
+)
+
+// Sentinel lokal adapter (bukan error domain) supaya middleware bisa memakai
+// error mapper yang sama tanpa membocorkan konsepnya ke domain.
+var (
+	errForbiddenRequest   = errors.New("forbidden request")
+	errRateLimitedRequest = errors.New("rate limited")
 )
 
 type fieldDetail struct {
@@ -80,6 +88,16 @@ func writeError(w http.ResponseWriter, log *slog.Logger, r *http.Request, err er
 		status = http.StatusConflict
 		code = codeConflict
 		message = "Konflik data"
+
+	case errors.Is(err, errRateLimitedRequest):
+		status = http.StatusTooManyRequests
+		code = codeRateLimited
+		message = "Terlalu banyak percobaan; coba lagi nanti"
+
+	case errors.Is(err, errForbiddenRequest):
+		status = http.StatusForbidden
+		code = codeForbidden
+		message = "Tidak diizinkan"
 
 	default:
 		if log != nil {

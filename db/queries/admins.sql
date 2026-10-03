@@ -13,7 +13,7 @@ INSERT INTO admins (email, password_hash)
 VALUES (sqlc.arg('email'), sqlc.arg('password_hash'))
 RETURNING id, email, password_hash, created_at;
 
--- name: UpdateAdminPassword :exec
+-- name: UpdateAdminPassword :execrows
 UPDATE admins
 SET password_hash = sqlc.arg('password_hash')
 WHERE id = sqlc.arg('id');

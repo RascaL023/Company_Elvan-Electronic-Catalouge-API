@@ -16,8 +16,11 @@ import (
 
 	"elvan-catalog-api/internal/adapter/in/httpapi"
 	"elvan-catalog-api/internal/adapter/out/postgres"
+	"elvan-catalog-api/internal/adapter/out/security"
+	"elvan-catalog-api/internal/application/auth"
 	"elvan-catalog-api/internal/application/catalog"
 	"elvan-catalog-api/internal/application/taxonomy"
+	"elvan-catalog-api/internal/platform/clock"
 	"elvan-catalog-api/internal/platform/config"
 	"elvan-catalog-api/internal/platform/dotenv"
 	"elvan-catalog-api/internal/platform/logger"
@@ -61,26 +64,48 @@ func run() error {
 	}
 	defer pool.Close()
 
-	// Wiring adapter → use case.
-	catalogService := catalog.New(
-		postgres.NewProductRepository(pool, log),
-		postgres.NewCategoryRepository(pool),
-		postgres.NewBrandRepository(pool),
-		postgres.NewTxManager(pool),
-		log,
-	)
-	taxonomyService := taxonomy.New(
-		postgres.NewCategoryRepository(pool),
-		postgres.NewBrandRepository(pool),
+	// Wiring adapter → use case (satu-satunya tempat DI).
+	productRepo := postgres.NewProductRepository(pool, log)
+	categoryRepo := postgres.NewCategoryRepository(pool)
+	brandRepo := postgres.NewBrandRepository(pool)
+	adminRepo := postgres.NewAdminRepository(pool)
+	sessionRepo := postgres.NewSessionRepository(pool)
+	txManager := postgres.NewTxManager(pool)
+
+	catalogService := catalog.New(productRepo, categoryRepo, brandRepo, txManager, log)
+	taxonomyService := taxonomy.New(categoryRepo, brandRepo, log)
+
+	authService := auth.New(
+		adminRepo,
+		sessionRepo,
+		security.NewPasswordHasher(security.DefaultArgon2Params()),
+		security.NewTokenGenerator(),
+		txManager,
+		clock.Real{},
+		auth.Config{SessionTTL: cfg.SessionTTL},
 		log,
 	)
 
+	loginLimit, err := httpapi.ParseRateLimit(cfg.RateLimitLogin)
+	if err != nil {
+		return err
+	}
+
 	router := httpapi.NewRouter(httpapi.Deps{
-		Catalog:  catalogService,
-		Taxonomy: taxonomyService,
-		Ready:    func(ctx context.Context) error { return postgres.Healthcheck(ctx, pool) },
-		Log:      log,
-		CORS:     httpapi.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins},
+		Catalog:        catalogService,
+		CatalogWriter:  catalogService,
+		Taxonomy:       taxonomyService,
+		TaxonomyWriter: taxonomyService,
+		Auth:           authService,
+		Transport: httpapi.CookieTransport{
+			Domain:   cfg.CookieDomain,
+			SameSite: cookieSameSite(cfg.CookieSameSite),
+			Secure:   cfg.CookieSecure,
+		},
+		LoginLimit: loginLimit,
+		Ready:      func(ctx context.Context) error { return postgres.Healthcheck(ctx, pool) },
+		Log:        log,
+		CORS:       httpapi.CORSConfig{AllowedOrigins: cfg.CORSAllowedOrigins},
 	})
 
 	srv := &http.Server{
@@ -112,4 +137,16 @@ func run() error {
 	}
 	log.Info("shutdown selesai")
 	return nil
+}
+
+// cookieSameSite memetakan nilai konfigurasi (lax/none/strict) ke http.SameSite.
+func cookieSameSite(v string) http.SameSite {
+	switch v {
+	case "none":
+		return http.SameSiteNoneMode
+	case "strict":
+		return http.SameSiteStrictMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }

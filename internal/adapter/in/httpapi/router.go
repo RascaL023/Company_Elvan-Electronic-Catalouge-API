@@ -36,21 +36,30 @@ type TaxonomyReader interface {
 type Readiness func(ctx context.Context) error
 
 // Deps adalah dependensi router.
+//
+// Katalog dan taxonomy diisi dua kali (reader dan writer) meski implementasi
+// konkretnya satu service; pemisahan interface membuat handler baca dan tulis
+// bisa diuji terpisah.
 type Deps struct {
-	Catalog  CatalogReader
-	Taxonomy TaxonomyReader
-	Ready    Readiness
-	Log      *slog.Logger
-	CORS     CORSConfig
+	Catalog        CatalogReader
+	CatalogWriter  CatalogWriter
+	Taxonomy       TaxonomyReader
+	TaxonomyWriter TaxonomyWriter
+	Auth           Authenticator
+	Transport      SessionTransport
+	LoginLimit     RateLimit
+	Ready          Readiness
+	Log            *slog.Logger
+	CORS           CORSConfig
 }
 
 type handlers struct {
 	deps Deps
 }
 
-// NewRouter menyusun rute dan middleware. Urutan middleware dari luar:
-// recover → request id → access log → CORS → handler.
-// Rate limit, CSRF/Origin check, dan auth ditambahkan pada Fase 4.
+// NewRouter menyusun rute dan middleware. Urutan dari luar:
+// recover → request id → access log → CORS → origin/CSRF guard → (rate limit
+// login) → auth → handler. Rate limit hanya dipasang pada rute login.
 func NewRouter(d Deps) http.Handler {
 	h := &handlers{deps: d}
 
@@ -58,6 +67,7 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 
+	// Baca publik.
 	mux.HandleFunc("GET /api/v1/catalog", h.catalog)
 	mux.HandleFunc("GET /api/v1/products", h.listProducts)
 	mux.HandleFunc("GET /api/v1/products/{id}", h.getProduct)
@@ -66,7 +76,28 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/brands", h.listBrands)
 	mux.HandleFunc("GET /api/v1/brands/{id}", h.getBrand)
 
+	// Auth. Login dibatasi rate limit; logout/me butuh sesi admin.
+	login := newLoginRateLimiter(d.LoginLimit, d.Log).middleware()
+	mux.Handle("POST /api/v1/auth/login", login(http.HandlerFunc(h.login)))
+	mux.Handle("POST /api/v1/auth/logout", h.requireAdmin(http.HandlerFunc(h.logout)))
+	mux.Handle("GET /api/v1/auth/me", h.requireAdmin(http.HandlerFunc(h.me)))
+
+	// Tulis (admin). Id di path wajib UUID canonical: id legacy hanya untuk
+	// baca (issue #6).
+	mux.Handle("POST /api/v1/products", h.requireAdmin(http.HandlerFunc(h.createProduct)))
+	mux.Handle("PATCH /api/v1/products/{id}", h.requireAdmin(http.HandlerFunc(h.updateProduct)))
+	mux.Handle("DELETE /api/v1/products/{id}", h.requireAdmin(http.HandlerFunc(h.deleteProduct)))
+
+	mux.Handle("POST /api/v1/categories", h.requireAdmin(http.HandlerFunc(h.createCategory)))
+	mux.Handle("PATCH /api/v1/categories/{id}", h.requireAdmin(http.HandlerFunc(h.updateCategory)))
+	mux.Handle("DELETE /api/v1/categories/{id}", h.requireAdmin(http.HandlerFunc(h.deleteCategory)))
+
+	mux.Handle("POST /api/v1/brands", h.requireAdmin(http.HandlerFunc(h.createBrand)))
+	mux.Handle("PATCH /api/v1/brands/{id}", h.requireAdmin(http.HandlerFunc(h.updateBrand)))
+	mux.Handle("DELETE /api/v1/brands/{id}", h.requireAdmin(http.HandlerFunc(h.deleteBrand)))
+
 	var handler http.Handler = mux
+	handler = originGuard(d.CORS.AllowedOrigins)(handler)
 	handler = cors(d.CORS)(handler)
 	handler = accessLog(d.Log)(handler)
 	handler = requestID(handler)

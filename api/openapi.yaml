@@ -9,8 +9,8 @@ info:
     Kontrak API katalog elektronik Elvan Electronic. Dokumen ini adalah sumber
     kebenaran kontrak antara backend (Go) dan frontend (React).
 
-    Cakupan versi ini: **hanya jalur baca publik** (Fase 2). Endpoint tulis,
-    auth, dan media ditambahkan pada fase berikutnya.
+    Cakupan versi ini (Fase 4): **jalur baca publik** + **auth admin** +
+    **endpoint tulis** produk/kategori/brand. Modul media menyusul di Fase 5.
 
     Konvensi:
     - JSON `camelCase`, waktu ISO-8601 UTC dengan milidetik (`.000Z`),
@@ -29,9 +29,9 @@ servers:
   - url: http://localhost:8080
     description: Development lokal
 
-# Semua endpoint pada fase ini publik. `security: []` menyatakan tidak ada
-# skema keamanan yang dibutuhkan; endpoint admin akan menambahkan `security`
-# sendiri pada Fase 4.
+# Default publik: endpoint baca tidak memerlukan kredensial. Endpoint admin
+# (auth `me`, serta semua operasi tulis) menambahkan `security: [{cookieAuth: []}]`
+# pada operasinya masing-masing.
 security: []
 
 tags:
@@ -45,6 +45,8 @@ tags:
     description: Kategori
   - name: Brands
     description: Brand
+  - name: Auth
+    description: Sesi admin (login, logout, sesi saat ini)
 
 paths:
   /healthz:
@@ -160,6 +162,40 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '500':
           $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Products]
+      operationId: createProduct
+      summary: Buat produk
+      description: |
+        Hanya admin. `id` tidak dikirim; id selalu dibuat server. `category`
+        wajib menunjuk kategori yang sudah ada, `brand` opsional. Referensi
+        divalidasi di dalam transaksi yang sama dengan penyimpanannya, sehingga
+        produk tidak pernah tersimpan dengan referensi yang menggantung.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+      responses:
+        '201':
+          description: Produk dibuat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/v1/products/{id}:
     get:
@@ -213,6 +249,67 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+    patch:
+      tags: [Products]
+      operationId: updateProduct
+      summary: Ubah produk
+      description: |
+        Hanya admin. Field yang tidak dikirim tidak diubah. `images`
+        menggantikan seluruh daftar gambar (`[]` mengosongkan). `id` wajib UUID
+        canonical; id legacy ditolak.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathUUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+      responses:
+        '200':
+          description: Produk setelah diubah
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Products]
+      operationId: deleteProduct
+      summary: Hapus produk
+      description: |
+        Hanya admin. `id` wajib UUID canonical. Penghapusan berkas gambar di
+        provider dilakukan server-side setelah transaksi sukses (Fase 5).
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathUUID'
+      responses:
+        '204':
+          description: Produk dihapus
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/v1/categories:
     get:
@@ -237,6 +334,38 @@ paths:
           $ref: '#/components/responses/NotModified'
         '500':
           $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Categories]
+      operationId: createCategory
+      summary: Buat kategori
+      description: |
+        Hanya admin. `slug` bila kosong diturunkan dari `name`; slug yang sudah
+        dipakai menghasilkan `409 conflict`.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCategoryRequest'
+      responses:
+        '201':
+          description: Kategori dibuat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/v1/categories/{id}:
     get:
@@ -256,6 +385,66 @@ paths:
           $ref: '#/components/responses/NotModified'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      tags: [Categories]
+      operationId: updateCategory
+      summary: Ubah kategori
+      description: Hanya admin. Field yang tidak dikirim tidak diubah.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathUUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCategoryRequest'
+      responses:
+        '200':
+          description: Kategori setelah diubah
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Categories]
+      operationId: deleteCategory
+      summary: Hapus kategori
+      description: |
+        Hanya admin. Ditolak `409 conflict` bila masih ada produk yang memakai
+        kategori ini (FK RESTRICT).
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathUUID'
+      responses:
+        '204':
+          description: Kategori dihapus
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -282,6 +471,38 @@ paths:
           $ref: '#/components/responses/NotModified'
         '500':
           $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Brands]
+      operationId: createBrand
+      summary: Buat brand
+      description: |
+        Hanya admin. `slug` bila kosong diturunkan dari `name`; slug yang sudah
+        dipakai menghasilkan `409 conflict`.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBrandRequest'
+      responses:
+        '201':
+          description: Brand dibuat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Brand'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/v1/brands/{id}:
     get:
@@ -301,6 +522,148 @@ paths:
           $ref: '#/components/responses/NotModified'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      tags: [Brands]
+      operationId: updateBrand
+      summary: Ubah brand
+      description: Hanya admin. Field yang tidak dikirim tidak diubah.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathUUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBrandRequest'
+      responses:
+        '200':
+          description: Brand setelah diubah
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Brand'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Brands]
+      operationId: deleteBrand
+      summary: Hapus brand
+      description: |
+        Hanya admin. Ditolak `409 conflict` bila masih ada produk yang memakai
+        brand ini (FK RESTRICT).
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PathUUID'
+      responses:
+        '204':
+          description: Brand dihapus
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Masuk sebagai admin
+      description: |
+        Memverifikasi email + password dan membuat sesi. Token sesi dikirim
+        lewat cookie `elvan_session` (HttpOnly), **tidak** di body. Percobaan
+        dibatasi per IP (`429 rate_limited`); kredensial salah selalu memakai
+        delay konstan dan mengembalikan `401 unauthorized` yang seragam.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login berhasil; cookie sesi di-set
+          headers:
+            Set-Cookie:
+              description: Cookie sesi HttpOnly (`elvan_session`).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Keluar
+      description: |
+        Mencabut sesi saat ini dan menghapus cookie. Idempoten: memanggilnya
+        tanpa sesi tetap mengembalikan `204`.
+      security: []
+      responses:
+        '204':
+          description: Sesi dicabut (bila ada); cookie dihapus
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentAdmin
+      summary: Admin dari sesi saat ini
+      description: |
+        Mengembalikan admin yang sedang login. Dipakai FE untuk memutuskan
+        tampilan admin. Sesi tidak valid/kedaluwarsa menghasilkan `401` dan
+        cookie dibersihkan.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Admin saat ini
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Admin'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -435,6 +798,132 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
+    Admin:
+      type: object
+      required: [id, email, createdAt]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        createdAt: { type: string, format: date-time }
+
+    Session:
+      type: object
+      description: Hasil login; token dikirim lewat cookie (lihat `Set-Cookie`).
+      required: [admin, expiresAt]
+      properties:
+        admin:
+          $ref: '#/components/schemas/Admin'
+        expiresAt:
+          type: string
+          format: date-time
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 1
+
+    ImageInput:
+      type: object
+      description: |-
+        Gambar yang sudah diunggah ke provider (upload tetap langsung dari
+        browser). `fileId` kosong untuk aset lama tanpa id provider.
+      required: [key]
+      properties:
+        key: { type: string }
+        fileId: { type: string }
+
+    CreateProductRequest:
+      type: object
+      description: |-
+        `id` tidak dikirim; id selalu dibuat server. `category`/`brand` berupa
+        slug dan harus sudah ada.
+      required: [name, slug, price, category]
+      properties:
+        name: { type: string, minLength: 1 }
+        slug: { type: string }
+        price:
+          type: integer
+          format: int64
+          minimum: 0
+        description: { type: string }
+        category:
+          type: string
+          description: Slug kategori; wajib ada.
+        brand:
+          type: string
+          description: Slug brand; kosong berarti tanpa brand.
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageInput'
+        rating:
+          $ref: '#/components/schemas/Rating'
+        isActive:
+          type: boolean
+          default: true
+
+    UpdateProductRequest:
+      type: object
+      description: |-
+        Semua field opsional; yang tidak dikirim tidak diubah. `images`
+        menggantikan seluruh gambar (`[]` mengosongkan).
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        price:
+          type: integer
+          format: int64
+          minimum: 0
+        description: { type: string }
+        category: { type: string }
+        brand: { type: string }
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageInput'
+        rating:
+          $ref: '#/components/schemas/Rating'
+        isActive: { type: boolean }
+
+    CreateCategoryRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        slug:
+          type: string
+          description: Bila kosong, server menurunkannya dari `name`.
+        description: { type: string }
+
+    UpdateCategoryRequest:
+      type: object
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+
+    CreateBrandRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        slug:
+          type: string
+          description: Bila kosong, server menurunkannya dari `name`.
+
+    UpdateBrandRequest:
+      type: object
+      properties:
+        name: { type: string }
+        slug: { type: string }
+
     Error:
       type: object
       description: Envelope error untuk seluruh endpoint.
@@ -454,6 +943,7 @@ components:
                 - forbidden
                 - not_found
                 - conflict
+                - rate_limited
                 - internal
             message:
               type: string
@@ -634,9 +1124,54 @@ components:
               code: not_found
               message: Data tidak ditemukan
 
-    # Catatan: respons 401 (unauthorized), 403 (forbidden), dan 409 (conflict)
-    # ditambahkan pada Fase 4 bersama endpoint tulis/auth. Kode-nya sudah
-    # terdaftar di enum `Error.code`.
+    Unauthorized:
+      description: Belum login, atau sesi tidak valid/kedaluwarsa.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: unauthorized
+              message: Belum terautentikasi
+
+    Forbidden:
+      description: |-
+        Origin permintaan tidak diizinkan (guard CSRF), atau aksi tidak
+        diizinkan untuk sesi ini.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: forbidden
+              message: Tidak diizinkan
+
+    Conflict:
+      description: |-
+        Konflik data: slug duplikat, atau kategori/brand yang masih dipakai
+        produk dihapus (RESTRICT).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: conflict
+              message: Konflik data
+
+    RateLimited:
+      description: Terlalu banyak percobaan login dari IP ini.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: rate_limited
+              message: Terlalu banyak percobaan; coba lagi nanti
+
     InternalError:
       description: |-
         Kesalahan internal. Detail sebenarnya hanya dicatat di log; klien tidak
@@ -649,3 +1184,12 @@ components:
             error:
               code: internal
               message: Terjadi kesalahan internal
+
+  # Sesi dibawa cookie HttpOnly. `bearerTransport` (Authorization: Bearer)
+  # belum dibangun; lihat ARCHITECTURE §10.
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: elvan_session
+      description: Cookie sesi HttpOnly yang di-set oleh `POST /auth/login`.

@@ -87,11 +87,18 @@ func (q *Queries) GetSessionByTokenHash(ctx context.Context, tokenHash []byte) (
 
 const touchSession = `-- name: TouchSession :exec
 UPDATE sessions
-SET last_seen_at = now()
-WHERE token_hash = $1
+SET last_seen_at = $1
+WHERE token_hash = $2
 `
 
-func (q *Queries) TouchSession(ctx context.Context, tokenHash []byte) error {
-	_, err := q.db.Exec(ctx, touchSession, tokenHash)
+type TouchSessionParams struct {
+	At        pgtype.Timestamptz
+	TokenHash []byte
+}
+
+// Waktu eksplisit (bukan now()) supaya pemanggil bisa menguji/debounce kapan
+// last_seen_at diperbarui.
+func (q *Queries) TouchSession(ctx context.Context, arg TouchSessionParams) error {
+	_, err := q.db.Exec(ctx, touchSession, arg.At, arg.TokenHash)
 	return err
 }

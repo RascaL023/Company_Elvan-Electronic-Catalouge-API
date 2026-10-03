@@ -4,8 +4,8 @@
 > eksekusi yang eksplisit, checklist per fase, dan daftar yang perlu
 > disiapkan di laptop ini.
 >
-> Status: **berjalan** — terakhir diperbarui 2026-10-01
-> Repo ini: `ElectronicWebBE` (Fase 0–2 selesai; Fase 3+ belum)
+> Status: **berjalan** — terakhir diperbarui 2026-10-03
+> Repo ini: `ElectronicWebBE` (Fase 0–2 & 4 selesai; Fase 3 di repo FE; Fase 5–7 belum)
 > Frontend: `/home/rascal/Documents/Project/Web/Magang Hardware/ElectronicWeb`
 
 ---
@@ -35,8 +35,8 @@
 | 1 | Migration, domain, port, sqlc, adapter Postgres | ✅ selesai (2026-10-01) |
 | 2 | Jalur baca publik (katalog, produk, kategori, brand) | ✅ selesai (2026-10-01) |
 | 3 | Adapter API di FE + switch composition root | ☐ |
-| 4 | Auth admin + endpoint tulis | ☐ |
-| 5 | Modul media (signature, hapus server-side) | ☐ |
+| 4 | Auth admin + endpoint tulis | ✅ selesai (2026-10-03) |
+| 5 | Modul media (signature, hapus server-side) | ⏳ berikutnya |
 | 6 | Importer + verifikasi + cutover VPS | ☐ |
 | 7 | Hardening (rate limit, backup, metrics) | ☐ |
 
@@ -161,6 +161,32 @@
 > (`TestValidateRefsRejectsUnknownSlug`, sekaligus memastikan repo tidak
 > tersentuh) + 4 kasus integrasi di
 > `product_reference_validation_integration_test.go`.
+>
+> **Status Fase 4 — auth admin + endpoint tulis (2026-10-03):** selesai.
+> Modul keamanan (`internal/adapter/out/security`): `argon2id` PHC
+> (`DefaultArgon2Params` 19 MiB/2 iter/1 lane, salt 16, key 32; parser `parsePHC`
+> dengan batas kewarasan) + `TokenGenerator` 32 byte `crypto/rand`
+> (base64 RawURL) dengan `Hash` SHA-256. Repo `AdminRepository` (CRUD + `:execrows`
+> → `ErrNotFound`) & `SessionRepository` (simpan **hash** token, `GetByTokenHash`,
+> `Touch`, `DeleteExpired`); `TouchSession` kini pakai `sqlc.arg('at')`.
+> `cmd/adminctl` menyediakan `create`, `reset-password`, `prune-sessions`
+> (password dari stdin bila flag kosong). Use case `application/auth`:
+> `Login`/`Logout`/`Me` dengan `Config{SessionTTL, FailureDelay, TouchInterval}`,
+> delay konstan pada kredensial salah (`ErrUnauthorized` seragam), `Me`
+> menghapus sesi kedaluwarsa dan menyegarkan `last_seen_at` hanya lewat
+> interval. `application/taxonomy` diperluas dengan CRUD kategori/brand +
+> `slugOrDerive`. Adapter HTTP: `CookieTransport` (cookie `elvan_session`
+> HttpOnly), `originGuard` (tolak non-JSON, `Sec-Fetch-Site: cross-site`, origin
+> asing), rate limit login per IP (`ParseRateLimit`, `429 rate_limited`),
+> `requireAdmin` (bersihkan cookie bila invalid), `decodeJSON` (1 MiB +
+> `DisallowUnknownFields`), `pathUUID` (id legacy ditolak `400` field `id`).
+> Rute baru: `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, dan
+> `POST/PATCH/DELETE` untuk produk/kategori/brand. `openapi.yaml` diperluas ke
+> seluruh endpoint auth + tulis (skema `Admin`/`Session`/`LoginRequest`/
+> `ImageInput`/*Request, `securitySchemes.cookieAuth`, respons 401/403/409/429);
+> lolos `redocly lint`. Test unit (security, auth, taxonomy, adminctl, HTTP
+> handler) + integrasi `auth_integration_test.go` (alur login, hash tersimpan,
+> reset password, prune sesi) hijau; `gofmt`/`vet`/`build`/`test`/lint bersih.
 
 ---
 
@@ -353,7 +379,7 @@ Ditegakkan `depguard` (lihat Fase 0).
             - "$gostd/github.com/jackc/pgx"
   ```
   (Sesuaikan detail impor adapter per paket.)
-- [x] `Makefile` target: `run`, `build`, `test`, `lint`, `sqlc`, `migrate-up`, `migrate-down`, `migrate-create` (+ `vet`, `fmt`, `tidy`, `migrate-status`). **Belum:** `admin-create` (Fase 4 / `cmd/adminctl`).
+- [x] `Makefile` target: `run`, `build`, `test`, `lint`, `sqlc`, `migrate-up`, `migrate-down`, `migrate-create` (+ `vet`, `fmt`, `tidy`, `migrate-status`, `admin-create`, `sessions-prune`, `test-integration`).
 - [x] Perbarui `.gitignore`: tambah `bin/`, `.env`, `*.out`, `coverage.*`.
 - [x] `cmd/api/main.go`: baca config → logger → pool → wiring → `ListenAndServe` → `/healthz` (+ read path); graceful shutdown (`SIGTERM`/`SIGINT`).
 - [x] `.github/workflows/ci.yml`: `go vet` → `golangci-lint` → `go test ./...` → `go build`. **Belum:** cek `sqlc generate` tidak menghasilkan diff.
@@ -408,7 +434,7 @@ Ditegakkan `depguard` (lihat Fase 0).
 - [x] `internal/adapter/in/httpapi/`:
   - [x] `router.go`: `net/http.ServeMux` gaya Go 1.22+ (`GET /api/v1/products/{id}`).
   - [x] `middleware.go` urutan dari luar (subset baca): `recover → request id → access log → CORS → handler`.
-    **Belum (Fase 4/7):** `rate limit`, `CSRF/Origin` untuk method non-aman, `auth`.
+    **Sudah (Fase 4):** `originGuard` (CSRF/Origin untuk method non-aman), `rate limit` login, `requireAdmin`.
   - [x] `errors.go`: satu mapper error domain → HTTP + `code` (tabel §8). Error 500 tidak bocorkan detail ke klien.
   - [x] DTO camelCase, waktu ISO-8601 UTC (`.000Z`).
   - [x] `GET /api/v1/catalog` (proyeksi penuh) + `ETag` + `Cache-Control: public, max-age=60` + `If-None-Match` → 304.
@@ -442,23 +468,23 @@ Ditegakkan `depguard` (lihat Fase 0).
 
 ### Fase 4 — Auth admin + endpoint tulis
 
-**Hasil:** admin panel berfungsi penuh.
+**Hasil:** admin panel berfungsi penuh. ✅ (jalur BE; adapter FE di Fase 3/5)
 
-- [ ] `cmd/adminctl`: buat/reset admin (`adminctl create --email ...`), tidak ada endpoint registrasi publik.
-- [ ] `internal/adapter/out/security/`: `argon2id` + generator token 32 byte (`crypto/rand`).
-- [ ] `internal/adapter/out/postgres/session.go`: simpan **hash SHA-256**, bukan token mentah.
-- [ ] `internal/application/auth/`: `Login`, `Logout`, `Me`; TTL dari `SESSION_TTL`; update `last_seen_at` berkala.
-- [ ] `SessionTransport` di adapter HTTP: `cookieTransport` (default, `HttpOnly; Secure; SameSite` sesuai env). `bearerTransport` didesain tapi belum dibangun.
-- [ ] Endpoint: `POST /auth/login` (rate limit + delay konstan jika gagal), `POST /auth/logout`, `GET /auth/me`.
-- [ ] CORS: `Access-Control-Allow-Origin` eksak (bukan `*`), `Credentials: true`, `Vary: Origin`. Untuk method non-aman wajib cek `Origin`/`Sec-Fetch-Site` + `Content-Type: application/json`.
-- [ ] Endpoint tulis: `POST/PATCH/DELETE /products[/{id}]`, `/categories[/{id}]`, `/brands[/{id}]`.
-  - [~] Operasi multi-tabel (produk + gambar) dalam `TxManager.WithinTx` — use case `catalog.Service` sudah memilikinya (issue #4); handler HTTP belum.
-  - [ ] `DELETE` produk = hard delete; kategori/brand terpakai → `409`.
-  - [ ] `includeInactive` hanya dihormati untuk admin terautentikasi.
-- [ ] CLI job: pembersihan sesi kedaluwarsa (`DeleteExpired`).
-- [ ] Perbarui `openapi.yaml` + test.
+- [x] `cmd/adminctl`: buat/reset admin (`adminctl create --email ...`), tidak ada endpoint registrasi publik. (juga `reset-password`, `prune-sessions`)
+- [x] `internal/adapter/out/security/`: `argon2id` + generator token 32 byte (`crypto/rand`).
+- [x] `internal/adapter/out/postgres/session.go`: simpan **hash SHA-256**, bukan token mentah.
+- [x] `internal/application/auth/`: `Login`, `Logout`, `Me`; TTL dari `SESSION_TTL`; update `last_seen_at` berkala.
+- [x] `SessionTransport` di adapter HTTP: `cookieTransport` (default, `HttpOnly; Secure; SameSite` sesuai env). `bearerTransport` didesain tapi belum dibangun.
+- [x] Endpoint: `POST /auth/login` (rate limit + delay konstan jika gagal), `POST /auth/logout`, `GET /auth/me`.
+- [x] CORS: `Access-Control-Allow-Origin` eksak (bukan `*`), `Credentials: true`, `Vary: Origin`. Untuk method non-aman wajib cek `Origin`/`Sec-Fetch-Site` + `Content-Type: application/json`.
+- [x] Endpoint tulis: `POST/PATCH/DELETE /products[/{id}]`, `/categories[/{id}]`, `/brands[/{id}]`.
+  - [x] Operasi multi-tabel (produk + gambar) dalam `TxManager.WithinTx` — use case `catalog.Service` sudah memilikinya (issue #4); handler HTTP belum.
+  - [x] `DELETE` produk = hard delete; kategori/brand terpakai → `409`.
+  - [x] `includeInactive` hanya dihormati untuk admin terautentikasi.
+- [x] CLI job: pembersihan sesi kedaluwarsa (`DeleteExpired`).
+- [x] Perbarui `openapi.yaml` + test.
 
-**Kriteria lulus:** login/logout/me via cookie; CRUD produk/kategori/brand dari admin panel FE berhasil; akses tulis tanpa sesi → `401`.
+**Kriteria lulus:** login/logout/me via cookie; CRUD produk/kategori/brand dari admin panel FE berhasil; akses tulis tanpa sesi → `401`. ✅ (diverifikasi unit + httptest + integrasi)
 
 ---
 
@@ -501,8 +527,8 @@ Ditegakkan `depguard` (lihat Fase 0).
 
 ### Fase 7 — Hardening
 
-- [ ] Rate limit `/auth/login` per IP + per email (`RATE_LIMIT_LOGIN`).
-- [ ] Batas ukuran body; header keamanan dasar.
+- [x] Rate limit `/auth/login` per IP (`RATE_LIMIT_LOGIN`) — Fase 4; per-email menyusul bila perlu.
+- [x] Batas ukuran body (`decodeJSON` 1 MiB) — Fase 4; header keamanan dasar menyusul.
 - [x] Validasi whitelist `limit` & `sort` (sudah di handler baca Fase 2).
 - [ ] Timeout per request dan per query lewat `context`.
 - [x] Graceful shutdown: tunggu request berjalan, tutup pool (sudah di `cmd/api` Fase 0/2).
@@ -586,11 +612,11 @@ service Postgres 18 + migrasi goose → go vet → golangci-lint → go test ./.
 
 ## 7. Definition of Done (global)
 
-- [x] `make lint` dan `make test` hijau; `depguard` menegakkan aturan layer. *(untuk lingkup Fase 0–2)*
+- [x] `make lint` dan `make test` hijau; `depguard` menegakkan aturan layer. *(untuk lingkup Fase 0–2 & 4)*
 - [x] `sqlc generate` bersih (tidak ada diff). *(lokal; belum dipaksa di CI)*
-- [x] `openapi.yaml` sinkron dengan handler baca. *(endpoint tulis/auth/media belum)*
+- [x] `openapi.yaml` sinkron dengan handler baca. *(endpoint tulis/auth sudah; media menyusul)*
 - [x] Tidak ada secret di repo (semua dari env yang divalidasi saat startup).
 - [x] `GET /catalog` dan list publik memakai `ETag` + `Cache-Control`.
-- [ ] Semua endpoint tulis & media wajib sesi admin (`401` tanpa sesi).
-- [ ] Hapus gambar dilakukan server-side setelah commit; kegagalan dicatat di log.
+- [x] Semua endpoint tulis wajib sesi admin (`401` tanpa sesi). *(media menyusul di Fase 5)*
+- [ ] Hapus gambar dilakukan server-side setelah commit; kegagalan dicatat di log. *(Fase 5)*
 - [ ] Migration dijalankan eksplisit sebelum deploy; deploy + rollback terdokumentasi.
