@@ -124,6 +124,13 @@ func (c *Config) validate(l *loader) {
 	if c.CookieSameSite == "none" && !c.CookieSecure {
 		l.errf("COOKIE_SECURE wajib true bila COOKIE_SAMESITE=none")
 	}
+	// Di production cookie sesi wajib Secure: tanpa itu cookie ikut terkirim
+	// lewat HTTP dan bisa dicuri. Gagal cepat di sini lebih baik daripada
+	// mengandalkan default compose (yang bisa ditimpa atau dilewati bila
+	// binary dijalankan langsung).
+	if c.Env == "production" && !c.CookieSecure {
+		l.errf("COOKIE_SECURE wajib true saat APP_ENV=production")
+	}
 }
 
 // loader mengumpulkan error parsing supaya semuanya bisa dilaporkan sekaligus.
