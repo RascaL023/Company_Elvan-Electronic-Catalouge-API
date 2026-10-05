@@ -193,6 +193,41 @@ func TestLoginMapsUnauthorized(t *testing.T) {
 	}
 }
 
+// DB bermasalah saat login harus muncul sebagai 500, bukan 401 yang menyesatkan
+// (use case sudah berhenti menyamarkannya; ini mengunci pemetaan HTTP-nya).
+func TestLoginMapsInternalErrorTo500(t *testing.T) {
+	au := &fakeAuth{loginErr: errors.New("database mati")}
+	router := newAuthRouter(au, &fakeCatalogWriter{}, &fakeTaxonomyWriter{}, RateLimit{Limit: 5, Period: time.Minute}, CORSConfig{})
+
+	rec := doJSON(t, router, http.MethodPost, "/api/v1/auth/login", `{"email":"x@y.z","password":"rahasia"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, ingin 500", rec.Code)
+	}
+	var body errorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != codeInternal {
+		t.Errorf("code = %q, ingin %q", body.Error.Code, codeInternal)
+	}
+	if strings.Contains(rec.Body.String(), "database mati") {
+		t.Error("detail error internal tidak boleh bocor ke klien")
+	}
+}
+
+func TestLoginMapsDBTimeoutTo504(t *testing.T) {
+	au := &fakeAuth{loginErr: context.DeadlineExceeded}
+	router := newAuthRouter(au, &fakeCatalogWriter{}, &fakeTaxonomyWriter{}, RateLimit{Limit: 5, Period: time.Minute}, CORSConfig{})
+
+	rec := doJSON(t, router, http.MethodPost, "/api/v1/auth/login", `{"email":"x@y.z","password":"rahasia"}`)
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, ingin 504", rec.Code)
+	}
+	var body errorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != codeTimeout {
+		t.Errorf("code = %q, ingin %q", body.Error.Code, codeTimeout)
+	}
+}
+
 func TestLoginRejectsMalformedJSON(t *testing.T) {
 	router := newAuthRouter(&fakeAuth{}, &fakeCatalogWriter{}, &fakeTaxonomyWriter{}, RateLimit{Limit: 5, Period: time.Minute}, CORSConfig{})
 	rec := doJSON(t, router, http.MethodPost, "/api/v1/auth/login", `{bukan json`)

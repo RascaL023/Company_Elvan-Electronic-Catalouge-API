@@ -94,18 +94,27 @@ func New(
 //
 // Semua kegagalan kredensial menjadi `ErrUnauthorized` yang sama (email tidak
 // terdaftar vs password salah tidak dibedakan) dan selalu melewati penundaan
-// konstan, agar tidak bisa dipakai memetakan email admin.
+// konstan, agar tidak bisa dipakai memetakan email admin. Error infrastruktur
+// (mis. database mati atau timeout) **tidak** disamarkan sebagai 401; ia
+// diteruskan apa adanya supaya klien menerima 500/504 yang jujur dan mudah
+// diamati.
 func (s *Service) Login(ctx context.Context, email, password string) (*Session, error) {
 	email = domain.NormalizeEmail(email)
 
 	admin, err := s.admins.GetByEmail(ctx, email)
 	if err != nil {
-		return nil, s.reject(ctx, err)
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, s.rejectCredentials(ctx)
+		}
+		return nil, s.rejectInternal(ctx, err)
 	}
 
 	ok, err := s.hasher.Verify(ctx, password, admin.PasswordHash)
-	if err != nil || !ok {
-		return nil, s.reject(ctx, err)
+	if err != nil {
+		return nil, s.rejectInternal(ctx, err)
+	}
+	if !ok {
+		return nil, s.rejectCredentials(ctx)
 	}
 
 	token, hash, err := s.tokens.Generate()
@@ -182,17 +191,34 @@ func (s *Service) Me(ctx context.Context, token string) (*domain.Admin, error) {
 	return admin, nil
 }
 
-// reject menyeragamkan kegagalan login: penundaan konstan + ErrUnauthorized.
-// Error internal (mis. database bermasalah) tetap dicatat supaya tidak hilang.
-func (s *Service) reject(ctx context.Context, cause error) error {
-	if cause != nil && !errors.Is(cause, domain.ErrNotFound) && s.log != nil {
+// rejectCredentials menyeragamkan kegagalan kredensial (email tidak terdaftar
+// atau password salah) menjadi ErrUnauthorized, selalu lewat penundaan konstan
+// agar waktu respons tidak bisa dipakai memetakan email admin.
+func (s *Service) rejectCredentials(ctx context.Context) error {
+	s.delayFailure(ctx)
+	return domain.ErrUnauthorized
+}
+
+// rejectInternal meneruskan error infrastruktur (mis. database mati atau
+// timeout) apa adanya supaya klien menerima 500/504, bukan 401 yang menyesatkan
+// dan menyulitkan observability. Error tetap dicatat, dan penundaan konstan
+// tetap diterapkan agar waktu respons tidak membocorkan apakah email terdaftar.
+func (s *Service) rejectInternal(ctx context.Context, cause error) error {
+	if s.log != nil {
 		s.log.ErrorContext(ctx, "login gagal karena error internal", "error", cause.Error())
 	}
-	if s.cfg.FailureDelay > 0 {
-		select {
-		case <-time.After(s.cfg.FailureDelay):
-		case <-ctx.Done():
-		}
+	s.delayFailure(ctx)
+	return cause
+}
+
+// delayFailure menerapkan penundaan konstan saat login gagal; dibatalkan bila
+// context selesai lebih dulu.
+func (s *Service) delayFailure(ctx context.Context) {
+	if s.cfg.FailureDelay <= 0 {
+		return
 	}
-	return domain.ErrUnauthorized
+	select {
+	case <-time.After(s.cfg.FailureDelay):
+	case <-ctx.Done():
+	}
 }

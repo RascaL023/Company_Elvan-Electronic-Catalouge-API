@@ -135,6 +135,7 @@ type harness struct {
 	svc      *Service
 	admins   *fakeAdmins
 	sessions *fakeSessions
+	hasher   *fakeHasher
 	tx       *fakeTx
 	now      time.Time
 }
@@ -149,12 +150,13 @@ func newHarness(t *testing.T) *harness {
 		byID:    map[string]domain.Admin{"admin-1": admin},
 	}
 	sessions := newFakeSessions()
+	hasher := &fakeHasher{}
 	tx := &fakeTx{}
 
-	svc := New(admins, sessions, &fakeHasher{}, fakeTokens{}, tx, fakeClock{now: now},
+	svc := New(admins, sessions, hasher, fakeTokens{}, tx, fakeClock{now: now},
 		Config{SessionTTL: time.Hour, FailureDelay: 0, TouchInterval: 5 * time.Minute}, discardLogger())
 
-	return &harness{svc: svc, admins: admins, sessions: sessions, tx: tx, now: now}
+	return &harness{svc: svc, admins: admins, sessions: sessions, hasher: hasher, tx: tx, now: now}
 }
 
 // --- login ------------------------------------------------------------------
@@ -213,14 +215,40 @@ func TestLoginRejectsWrongPassword(t *testing.T) {
 	}
 }
 
-// Error internal tidak boleh bocor ke klien sebagai 500; ia disamarkan menjadi
-// ErrUnauthorized (dan dicatat di log oleh reject).
-func TestLoginHidesInternalError(t *testing.T) {
+// Error infrastruktur (mis. database mati) TIDAK disamarkan sebagai 401: ia
+// diteruskan apa adanya supaya klien/monitoring menerima 500, bukan salah
+// kredensial yang menyesatkan. Kegagalan kredensial tetap 401 seragam (lihat
+// TestLoginRejectsUnknownEmail / TestLoginRejectsWrongPassword).
+func TestLoginPropagatesInternalError(t *testing.T) {
 	h := newHarness(t)
-	h.admins.err = errors.New("database mati")
+	cause := errors.New("database mati")
+	h.admins.err = cause
 
-	if _, err := h.svc.Login(context.Background(), "admin@example.com", "rahasia"); !errors.Is(err, domain.ErrUnauthorized) {
-		t.Errorf("Login = %v, ingin ErrUnauthorized", err)
+	_, err := h.svc.Login(context.Background(), "admin@example.com", "rahasia")
+	if !errors.Is(err, cause) {
+		t.Fatalf("Login = %v, ingin error internal diteruskan apa adanya", err)
+	}
+	if errors.Is(err, domain.ErrUnauthorized) {
+		t.Error("error internal tidak boleh dipetakan menjadi ErrUnauthorized")
+	}
+	if len(h.sessions.created) != 0 {
+		t.Error("sesi tidak boleh dibuat saat login gagal")
+	}
+}
+
+// Error dari hasher (mis. hash rusak) adalah error internal, bukan kredensial
+// salah; ia juga harus diteruskan, bukan disamarkan jadi 401.
+func TestLoginPropagatesHasherError(t *testing.T) {
+	h := newHarness(t)
+	cause := errors.New("hash rusak")
+	h.hasher.err = cause
+
+	_, err := h.svc.Login(context.Background(), "admin@example.com", "rahasia")
+	if !errors.Is(err, cause) {
+		t.Fatalf("Login = %v, ingin error hasher diteruskan apa adanya", err)
+	}
+	if errors.Is(err, domain.ErrUnauthorized) {
+		t.Error("error hasher tidak boleh dipetakan menjadi ErrUnauthorized")
 	}
 }
 
