@@ -70,7 +70,7 @@ func (q *Queries) GetAdminByID(ctx context.Context, id uuid.UUID) (Admin, error)
 	return i, err
 }
 
-const updateAdminPassword = `-- name: UpdateAdminPassword :exec
+const updateAdminPassword = `-- name: UpdateAdminPassword :execrows
 UPDATE admins
 SET password_hash = $1
 WHERE id = $2
@@ -81,7 +81,10 @@ type UpdateAdminPasswordParams struct {
 	ID           uuid.UUID
 }
 
-func (q *Queries) UpdateAdminPassword(ctx context.Context, arg UpdateAdminPasswordParams) error {
-	_, err := q.db.Exec(ctx, updateAdminPassword, arg.PasswordHash, arg.ID)
-	return err
+func (q *Queries) UpdateAdminPassword(ctx context.Context, arg UpdateAdminPasswordParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateAdminPassword, arg.PasswordHash, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

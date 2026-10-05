@@ -678,6 +678,35 @@ Internet ──▶ Caddy (TLS otomatis)
 4. **Verifikasi:** bandingkan jumlah baris, sampel produk, dan hasil `GET /catalog` vs Firestore.
 5. **Cutover:** FE memakai adapter API (switch di composition root FE), Worker dimatikan setelah `media` API terbukti, Firebase dibiarkan read-only sementara sebagai cadangan.
 
+### 16.1 Format file ekspor (kontrak `cmd/importer`)
+
+Satu berkas JSON berisi tiga koleksi. Field `legacy_id` **wajib** — itu id
+Firestore (dokumen), dipakai sebagai kunci idempoten. `created_at`/`updatedAt`
+opsional (ISO-8601); bila kosong, database memakai `now()`.
+
+```jsonc
+{
+  "categories": [
+    {"legacy_id": "<firestore-id>", "name": "…", "slug": "…", "description": "…",
+     "createdAt": "2024-05-01T00:00:00Z", "updatedAt": "…"}
+  ],
+  "brands": [
+    {"legacy_id": "…", "name": "…", "slug": "…", "createdAt": "…", "updatedAt": "…"}
+  ],
+  "products": [
+    {"legacy_id": "…", "name": "…", "slug": "…", "price": 1350000,
+     "description": "…", "category": "television", "brand": "polytron",
+     "images": ["assets/…jpg"], "imageFileIds": ["fileId"],   // array paralel (§4)
+     "rating": {"rate": 4.4, "count": 85},
+     "isActive": true, "createdAt": "…", "updatedAt": "…"}
+  ],
+  "catalog_snapshot": {}   // boleh ada; otomatis tidak dipakai (hanya proyeksi)
+}
+```
+
+Catatan: `brand` boleh kosong (produk tanpa brand); `isActive` yang hilang
+berarti `true` (perilaku asli FE).
+
 ---
 
 ## 17. Roadmap Implementasi

@@ -16,6 +16,10 @@ import (
 
 const readinessTimeout = 2 * time.Second
 
+// defaultRequestTimeout dipakai bila Deps.RequestTimeout tidak diset (mis. pada
+// test handler yang tidak membutuhkannya).
+const defaultRequestTimeout = 30 * time.Second
+
 // CatalogReader adalah bagian use case katalog yang dipakai adapter HTTP.
 // Didefinisikan di sisi konsumen agar handler mudah diuji dengan fake.
 type CatalogReader interface {
@@ -36,21 +40,37 @@ type TaxonomyReader interface {
 type Readiness func(ctx context.Context) error
 
 // Deps adalah dependensi router.
+//
+// Katalog dan taxonomy diisi dua kali (reader dan writer) meski implementasi
+// konkretnya satu service; pemisahan interface membuat handler baca dan tulis
+// bisa diuji terpisah.
 type Deps struct {
-	Catalog  CatalogReader
-	Taxonomy TaxonomyReader
-	Ready    Readiness
-	Log      *slog.Logger
-	CORS     CORSConfig
+	Catalog        CatalogReader
+	CatalogWriter  CatalogWriter
+	Taxonomy       TaxonomyReader
+	TaxonomyWriter TaxonomyWriter
+	Auth           Authenticator
+	Transport      SessionTransport
+	Media          MediaIssuer
+	LoginLimit     RateLimit
+	Ready          Readiness
+	Log            *slog.Logger
+	CORS           CORSConfig
+	// RequestTimeout membatasi waktu proses per request lewat context (Fase 7).
+	// Nol berarti memakai defaultRequestTimeout; negatif mematikan timeout
+	// (hanya untuk test).
+	RequestTimeout time.Duration
+	// Observer adalah titik sambung metrics/tracing (Fase 7); nil = mati.
+	Observer Observer
 }
 
 type handlers struct {
 	deps Deps
 }
 
-// NewRouter menyusun rute dan middleware. Urutan middleware dari luar:
-// recover → request id → access log → CORS → handler.
-// Rate limit, CSRF/Origin check, dan auth ditambahkan pada Fase 4.
+// NewRouter menyusun rute dan middleware. Urutan dari luar:
+// recover → request id → access log → CORS → origin/CSRF guard → (rate limit
+// login) → auth → handler. Rate limit hanya dipasang pada rute login.
 func NewRouter(d Deps) http.Handler {
 	h := &handlers{deps: d}
 
@@ -58,6 +78,7 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 
+	// Baca publik.
 	mux.HandleFunc("GET /api/v1/catalog", h.catalog)
 	mux.HandleFunc("GET /api/v1/products", h.listProducts)
 	mux.HandleFunc("GET /api/v1/products/{id}", h.getProduct)
@@ -66,9 +87,41 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/v1/brands", h.listBrands)
 	mux.HandleFunc("GET /api/v1/brands/{id}", h.getBrand)
 
+	// Auth. Login dibatasi rate limit; logout/me butuh sesi admin.
+	login := newLoginRateLimiter(d.LoginLimit, d.Log).middleware()
+	mux.Handle("POST /api/v1/auth/login", login(http.HandlerFunc(h.login)))
+	mux.Handle("POST /api/v1/auth/logout", h.requireAdmin(http.HandlerFunc(h.logout)))
+	mux.Handle("GET /api/v1/auth/me", h.requireAdmin(http.HandlerFunc(h.me)))
+
+	// Tulis (admin). Id di path wajib UUID canonical: id legacy hanya untuk
+	// baca (issue #6).
+	mux.Handle("POST /api/v1/products", h.requireAdmin(http.HandlerFunc(h.createProduct)))
+	mux.Handle("PATCH /api/v1/products/{id}", h.requireAdmin(http.HandlerFunc(h.updateProduct)))
+	mux.Handle("DELETE /api/v1/products/{id}", h.requireAdmin(http.HandlerFunc(h.deleteProduct)))
+
+	mux.Handle("POST /api/v1/categories", h.requireAdmin(http.HandlerFunc(h.createCategory)))
+	mux.Handle("PATCH /api/v1/categories/{id}", h.requireAdmin(http.HandlerFunc(h.updateCategory)))
+	mux.Handle("DELETE /api/v1/categories/{id}", h.requireAdmin(http.HandlerFunc(h.deleteCategory)))
+
+	mux.Handle("POST /api/v1/brands", h.requireAdmin(http.HandlerFunc(h.createBrand)))
+	mux.Handle("PATCH /api/v1/brands/{id}", h.requireAdmin(http.HandlerFunc(h.updateBrand)))
+	mux.Handle("DELETE /api/v1/brands/{id}", h.requireAdmin(http.HandlerFunc(h.deleteBrand)))
+
+	// Media (admin). Signature upload + hapus berkas eksplisit (transisi).
+	mux.Handle("GET /api/v1/media/signature", h.requireAdmin(http.HandlerFunc(h.mediaSignature)))
+	mux.Handle("DELETE /api/v1/media/files", h.requireAdmin(http.HandlerFunc(h.mediaDeleteFiles)))
+
 	var handler http.Handler = mux
+	// Timeout paling dalam: hanya membungkus handler (bukan logging/CORS)
+	// supaya waktu yang dihitung access log tetap waktu handler yang sesungguhnya.
+	reqTimeout := d.RequestTimeout
+	if reqTimeout == 0 {
+		reqTimeout = defaultRequestTimeout
+	}
+	handler = timeout(reqTimeout)(handler)
+	handler = originGuard(d.CORS.AllowedOrigins)(handler)
 	handler = cors(d.CORS)(handler)
-	handler = accessLog(d.Log)(handler)
+	handler = accessLog(d.Log, d.Observer)(handler)
 	handler = requestID(handler)
 	handler = recoverer(d.Log)(handler)
 	return handler

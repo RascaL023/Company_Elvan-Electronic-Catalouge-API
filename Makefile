@@ -7,7 +7,7 @@ MIGRATIONS_DIR ?= db/migrations
 # DSN test integrasi; test yang di-skip bila kosong memakai fallback DATABASE_URL.
 TEST_DATABASE_URL ?=
 
-.PHONY: help run build test test-integration vet lint fmt tidy sqlc migrate-status migrate-up migrate-down migrate-create
+.PHONY: help run build test test-integration vet lint fmt tidy sqlc admin-create sessions-prune import import-dry verify migrate-status migrate-up migrate-down migrate-create
 
 help: ## Tampilkan daftar target
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -39,6 +39,24 @@ tidy: ## Sinkronkan go.mod/go.sum
 
 sqlc: ## Generate kode sqlc
 	sqlc generate
+
+admin-create: ## Buat admin: make admin-create EMAIL=admin@example.com
+	@test -n "$(EMAIL)" || { echo "EMAIL belum diisi, contoh: make admin-create EMAIL=admin@example.com"; exit 1; }
+	$(GO) run ./cmd/adminctl create --email "$(EMAIL)"
+
+sessions-prune: ## Hapus sesi yang sudah kedaluwarsa
+	$(GO) run ./cmd/adminctl prune-sessions
+
+import: ## Impor data Firestore: make import INPUT=export.json (idempoten)
+	@test -n "$(INPUT)" || { echo "INPUT belum diisi, contoh: make import INPUT=export.json"; exit 1; }
+	$(GO) run ./cmd/importer import --input "$(INPUT)"
+
+import-dry: ## Validasi file ekspor tanpa menulis: make import-dry INPUT=export.json
+	@test -n "$(INPUT)" || { echo "INPUT belum diisi, contoh: make import-dry INPUT=export.json"; exit 1; }
+	$(GO) run ./cmd/importer import --input "$(INPUT)" --dry-run
+
+verify: ## Hitung baris per tabel untuk verifikasi pasca-impor
+	$(GO) run ./cmd/importer verify
 
 migrate-status: ## Status migrasi (butuh DATABASE_URL)
 	@test -n "$(DATABASE_URL)" || { echo "DATABASE_URL belum diisi"; exit 1; }

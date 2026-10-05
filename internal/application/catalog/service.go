@@ -11,28 +11,39 @@ import (
 	"elvan-catalog-api/internal/domain"
 )
 
+// ImageCleaner membersihkan berkas gambar di provider setelah transaksi commit
+// (ARCHITECTURE §11). Implementasi konkretnya use case media; interface ini
+// didefinisikan di sisi konsumen supaya paket catalog tidak bergantung pada
+// paket media.
+type ImageCleaner interface {
+	DeleteImages(ctx context.Context, fileIDs []string) (port.DeleteResult, error)
+}
+
 // Service adalah use case katalog. Operasi baca tersedia sejak Fase 2; operasi
-// tulis (Create/Update/Delete) mulai dibangun pada Fase 4. Pada tahap ini belum
-// ada handler HTTP — use case tulis dipakai lewat test dan pemanggil lain dulu.
+// tulis (Create/Update/Delete) mulai dibangun pada Fase 4. Pembersihan berkas
+// gambar server-side (Fase 5) memakai `cleaner` bila diisi.
 type Service struct {
 	products   port.ProductRepository
 	categories port.CategoryRepository
 	brands     port.BrandRepository
 	tx         port.TxManager
+	cleaner    ImageCleaner
 	log        *slog.Logger
 }
 
 // New membuat Service katalog. `categories`/`brands` dipakai memvalidasi
 // referensi sebelum menulis produk (issue #3); `tx` adalah unit of work untuk
-// operasi tulis (issue #4).
+// operasi tulis (issue #4); `cleaner` menghapus berkas gambar yang terlepas
+// **setelah** commit (boleh nil, mis. saat media tidak dikonfigurasi).
 func New(
 	products port.ProductRepository,
 	categories port.CategoryRepository,
 	brands port.BrandRepository,
 	tx port.TxManager,
+	cleaner ImageCleaner,
 	log *slog.Logger,
 ) *Service {
-	return &Service{products: products, categories: categories, brands: brands, tx: tx, log: log}
+	return &Service{products: products, categories: categories, brands: brands, tx: tx, cleaner: cleaner, log: log}
 }
 
 // ListAll mengembalikan proyeksi ringan seluruh katalog (GET /catalog).
@@ -151,6 +162,18 @@ func (s *Service) Create(ctx context.Context, in CreateProductInput) (*domain.Pr
 // gagal. Field `Category`/`Brand` yang diubah divalidasi lebih dulu
 // (issue #3) — brand yang tidak ada tidak lagi mengosongkan brand secara diam-diam. `patch` memakai tipe domain karena bentuknya memang sudah patch.
 func (s *Service) Update(ctx context.Context, id string, patch domain.ProductPatch) (*domain.Product, error) {
+	// Bila gambar diganti, catat fileId lama **sebelum** update supaya berkas
+	// yang dilepas bisa dibersihkan setelah commit. Dibaca di luar transaksi
+	// karena hanya untuk keperluan pembersihan best-effort.
+	var removed []string
+	if patch.Images != nil {
+		existing, err := s.products.GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		removed = removedFileIDs(fileIDsOf(existing.Images), *patch.Images)
+	}
+
 	var updated *domain.Product
 	err := s.tx.WithinTx(ctx, func(ctx context.Context) error {
 		if err := s.validateRefs(ctx, patch.Category, patch.Brand); err != nil {
@@ -166,6 +189,7 @@ func (s *Service) Update(ctx context.Context, id string, patch domain.ProductPat
 	if err != nil {
 		return nil, err
 	}
+	s.cleanupImages(ctx, removed)
 	return updated, nil
 }
 
@@ -188,11 +212,61 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if len(removed) > 0 && s.log != nil {
-		s.log.InfoContext(ctx, "produk dihapus; gambar menunggu pembersihan provider",
-			"product_id", id,
-			"images", len(removed),
-		)
-	}
+	s.cleanupImages(ctx, fileIDsOf(removed))
 	return nil
+}
+
+// cleanupImages menghapus berkas gambar di provider **setelah commit**
+// (ARCHITECTURE §11). Best-effort: kegagalan tidak membatalkan operasi DB dan
+// sudah dicatat di log oleh use case media. Gambar tanpa fileId dilewati oleh
+// adapter.
+func (s *Service) cleanupImages(ctx context.Context, fileIDs []string) {
+	if len(fileIDs) == 0 {
+		return
+	}
+	if s.cleaner == nil {
+		if s.log != nil {
+			s.log.InfoContext(ctx, "gambar terlepas menunggu pembersihan provider (media belum dikonfigurasi)",
+				"file_ids", fileIDs,
+			)
+		}
+		return
+	}
+	if _, err := s.cleaner.DeleteImages(ctx, fileIDs); err != nil {
+		if s.log != nil {
+			s.log.ErrorContext(ctx, "pembersihan gambar setelah commit gagal",
+				"file_ids", fileIDs,
+				"error", err.Error(),
+			)
+		}
+	}
+}
+
+// fileIDsOf mengambil fileId dari daftar gambar, membuang yang kosong.
+func fileIDsOf(images []domain.Image) []string {
+	out := make([]string, 0, len(images))
+	for _, img := range images {
+		if img.FileID != "" {
+			out = append(out, img.FileID)
+		}
+	}
+	return out
+}
+
+// removedFileIDs mengembalikan fileId lama yang tidak lagi dipakai gambar
+// baru — inilah berkas yang perlu dihapus di provider.
+func removedFileIDs(old []string, next []domain.Image) []string {
+	keep := make(map[string]struct{}, len(next))
+	for _, img := range next {
+		if img.FileID != "" {
+			keep[img.FileID] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(old))
+	for _, id := range old {
+		if _, ok := keep[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
 }

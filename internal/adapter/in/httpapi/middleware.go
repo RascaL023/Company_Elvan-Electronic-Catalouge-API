@@ -88,11 +88,39 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// accessLog mencatat satu baris log per request (JSON via slog).
-func accessLog(log *slog.Logger) func(http.Handler) http.Handler {
+// RequestObservation adalah satu event request yang diamati middleware access
+// log. Ini adalah **titik sambung** metrics/tracing (Fase 7): implementasi
+// (Prometheus, OTel, dsb.) dipasang lewat Deps.Observer tanpa menyentuh logika
+// handler. Field-nya sengaja berupa tipe dasar agar adapter bebas memilih
+// backend.
+type RequestObservation struct {
+	RequestID  string
+	Method     string
+	Path       string
+	Status     int
+	Bytes      int
+	Duration   time.Duration
+	RemoteAddr string
+}
+
+// Observer menerima satu event per request. Boleh nil (mati). Implementasi
+// harus ringan dan tidak pernah memblokir request lama (mis. goroutine/channel
+// sendiri bila backend-nya lambat).
+type Observer interface {
+	ObserveRequest(o RequestObservation)
+}
+
+// ObserverFunc memudahkan memasang fungsi biasa sebagai Observer.
+type ObserverFunc func(RequestObservation)
+
+func (f ObserverFunc) ObserveRequest(o RequestObservation) { f(o) }
+
+// accessLog mencatat satu baris log per request (JSON via slog) dan
+// meneruskan observasi ke Deps.Observer bila dipasang.
+func accessLog(log *slog.Logger, observer Observer) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if log == nil {
+			if log == nil && observer == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -102,14 +130,51 @@ func accessLog(log *slog.Logger) func(http.Handler) http.Handler {
 			if rec.status == 0 {
 				rec.status = http.StatusOK
 			}
-			log.LogAttrs(r.Context(), slog.LevelInfo, "http request",
-				slog.String("request_id", requestIDFrom(r.Context())),
-				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
-				slog.Int("status", rec.status),
-				slog.Int("bytes", rec.bytes),
-				slog.Int64("duration_ms", time.Since(start).Milliseconds()),
-			)
+			dur := time.Since(start)
+			if log != nil {
+				log.LogAttrs(r.Context(), slog.LevelInfo, "http request",
+					slog.String("request_id", requestIDFrom(r.Context())),
+					slog.String("method", r.Method),
+					slog.String("path", r.URL.Path),
+					slog.Int("status", rec.status),
+					slog.Int("bytes", rec.bytes),
+					slog.Int64("duration_ms", dur.Milliseconds()),
+				)
+			}
+			if observer != nil {
+				observer.ObserveRequest(RequestObservation{
+					RequestID:  requestIDFrom(r.Context()),
+					Method:     r.Method,
+					Path:       r.URL.Path,
+					Status:     rec.status,
+					Bytes:      rec.bytes,
+					Duration:   dur,
+					RemoteAddr: r.RemoteAddr,
+				})
+			}
+		})
+	}
+}
+
+// timeout membatasi waktu proses satu request lewat context (Fase 7).
+//
+// Semua work di dalam handler (query database, dsb) menerima context yang sama,
+// jadi ketika batas tercapai query ikut ter-batalkan dan kembali sebagai error
+// context deadline yang dipetakan ke 504. Nilai <= 0 membuat middleware ini
+// lewat-tangan tanpa memasang deadline (lihat Deps.RequestTimeout).
+//
+// Ini pelengkap statement_timeout di sisi database (config
+// DB_STATEMENT_TIMEOUT): context membatalkan eksekusi di klien, statement_timeout
+// membatalkan di server — keduanya mencegah query menumpuk.
+func timeout(d time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if d <= 0 {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), d)
+			defer cancel()
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

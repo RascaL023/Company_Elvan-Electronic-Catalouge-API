@@ -24,6 +24,10 @@ type Config struct {
 
 	DatabaseURL string // DSN PostgreSQL (pgx)
 	DBMaxConns  int32  // ukuran pool
+	// DBStatementTimeout adalah batas waktu eksekusi per statement (server-side,
+	// lewat runtime parameter `statement_timeout`). Query lambat dipotong oleh
+	// PostgreSQL sehingga koneksi tidak tersangkut (Fase 7).
+	DBStatementTimeout time.Duration
 
 	ImageKitPrivateKey  string // secret; hanya untuk modul media
 	ImageKitURLEndpoint string
@@ -37,6 +41,10 @@ type Config struct {
 
 	CORSAllowedOrigins []string // origin eksak, tanpa wildcard
 	RateLimitLogin     string   // mis. "5/min"; diurai di modul auth
+
+	// RequestTimeout membatasi waktu proses satu request lewat context
+	// (Fase 7): handler dan seluruh query di dalamnya ikut ter-batalkan.
+	RequestTimeout time.Duration
 }
 
 // Load membaca environment dan mengembalikan Config yang sudah tervalidasi.
@@ -49,8 +57,9 @@ func Load() (*Config, error) {
 		HTTPAddr: l.str("HTTP_ADDR", ":8080"),
 		LogLevel: l.str("LOG_LEVEL", "info"),
 
-		DatabaseURL: l.str("DATABASE_URL", ""),
-		DBMaxConns:  int32(l.integer("DB_MAX_CONNS", 10)),
+		DatabaseURL:        l.str("DATABASE_URL", ""),
+		DBMaxConns:         int32(l.integer("DB_MAX_CONNS", 10)),
+		DBStatementTimeout: l.duration("DB_STATEMENT_TIMEOUT", 10*time.Second),
 
 		ImageKitPrivateKey:  l.str("IMAGEKIT_PRIVATE_KEY", ""),
 		ImageKitURLEndpoint: l.str("IMAGEKIT_URL_ENDPOINT", ""),
@@ -64,6 +73,7 @@ func Load() (*Config, error) {
 
 		CORSAllowedOrigins: l.csv("CORS_ALLOWED_ORIGINS"),
 		RateLimitLogin:     l.str("RATE_LIMIT_LOGIN", "5/min"),
+		RequestTimeout:     l.duration("REQUEST_TIMEOUT", 30*time.Second),
 	}
 
 	cfg.validate(l)
@@ -90,6 +100,12 @@ func (c *Config) validate(l *loader) {
 	if c.DBMaxConns <= 0 {
 		l.errf("DB_MAX_CONNS harus > 0, dapat %d", c.DBMaxConns)
 	}
+	if c.DBStatementTimeout <= 0 {
+		l.errf("DB_STATEMENT_TIMEOUT harus > 0, dapat %s", c.DBStatementTimeout)
+	}
+	if c.RequestTimeout <= 0 {
+		l.errf("REQUEST_TIMEOUT harus > 0, dapat %s", c.RequestTimeout)
+	}
 	if c.SessionTTL <= 0 {
 		l.errf("SESSION_TTL harus > 0, dapat %s", c.SessionTTL)
 	}
@@ -107,6 +123,13 @@ func (c *Config) validate(l *loader) {
 	}
 	if c.CookieSameSite == "none" && !c.CookieSecure {
 		l.errf("COOKIE_SECURE wajib true bila COOKIE_SAMESITE=none")
+	}
+	// Di production cookie sesi wajib Secure: tanpa itu cookie ikut terkirim
+	// lewat HTTP dan bisa dicuri. Gagal cepat di sini lebih baik daripada
+	// mengandalkan default compose (yang bisa ditimpa atau dilewati bila
+	// binary dijalankan langsung).
+	if c.Env == "production" && !c.CookieSecure {
+		l.errf("COOKIE_SECURE wajib true saat APP_ENV=production")
 	}
 }
 
