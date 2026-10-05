@@ -3,6 +3,9 @@
 Backend Go + PostgreSQL untuk katalog elektronik Elvan Electronic. Repo ini
 terpisah dari frontend (`Company_Elvan-Electronic-Catalouge`).
 
+Baru bergabung? Mulai dari **[`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md)**
+(onboarding, konvensi, resep tugas, troubleshooting).
+
 Desain lengkap ada di [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), dan
 langkah implementasi per fase ada di
 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
