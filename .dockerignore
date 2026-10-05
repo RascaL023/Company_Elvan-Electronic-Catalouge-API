@@ -1,0 +1,31 @@
+# Jangan pernah kirim secret atau VCS ke build context Docker.
+# `.env` berisi kredensial database/ImageKit; tanpa berkas ini `COPY . .`
+# di deploy/Dockerfile akan memasukkannya ke layer build (cache tetap lokal,
+# tapi tetap higienis untuk dihindari) dan membengkakkan konteks.
+.env
+.env.*
+!.env.example
+deploy/.env
+deploy/.env.*
+
+# VCS & tooling lokal
+.git
+.gitignore
+.gitattributes
+.github
+
+# Hasil build lokal
+bin/
+dist/
+deploy/site/
+*.out
+coverage.*
+
+# Dokumentasi/tooling yang tidak dibutuhkan untuk build binary
+docs/
+*.md
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
