@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -112,17 +113,91 @@ func TestDeleteReportsUnaccountedAsFailed(t *testing.T) {
 	}
 }
 
-func TestDeleteReturnsErrorOnProviderFailure(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
+// Satu batch ditolak provider tidak boleh menghentikan batch berikutnya
+// (perilaku Worker lama): id batch gagal masuk `failed`, sisanya tetap dicoba.
+func TestDeleteContinuesAfterRejectedBatch(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var body deleteRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(deleteResponse{
+			SuccessfullyDeletedFileIDs: body.FileIDs,
+		})
 	}))
 	defer srv.Close()
 
 	c := New("key")
 	c.baseURL = srv.URL
 
-	if _, err := c.Delete(context.Background(), []string{"f1"}); err == nil {
-		t.Fatal("Delete seharusnya mengembalikan error pada status non-2xx")
+	// 150 id = dua batch (batas 100 id/request).
+	ids := make([]string, 0, 150)
+	for i := 0; i < 150; i++ {
+		ids = append(ids, "f"+strconv.Itoa(i))
+	}
+
+	res, err := c.Delete(context.Background(), ids)
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if requests != 2 {
+		t.Errorf("request ke provider = %d, ingin 2 (batch kedua tetap dicoba)", requests)
+	}
+	if res.Deleted != 50 {
+		t.Errorf("deleted = %d, ingin 50", res.Deleted)
+	}
+	if len(res.Failed) != 100 {
+		t.Errorf("failed = %d id, ingin 100", len(res.Failed))
+	}
+}
+
+func TestDeleteTreatsUnreadableBodyAsFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("bukan json"))
+	}))
+	defer srv.Close()
+
+	c := New("key")
+	c.baseURL = srv.URL
+
+	res, err := c.Delete(context.Background(), []string{"f1"})
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if res.Deleted != 0 {
+		t.Errorf("deleted = %d, ingin 0", res.Deleted)
+	}
+	if len(res.Failed) != 1 || res.Failed[0] != "f1" {
+		t.Errorf("failed = %v, ingin [f1]", res.Failed)
+	}
+}
+
+// Context yang sudah dibatalkan (klien menutup koneksi / timeout) menghentikan
+// pembersihan dan dilaporkan sebagai error; provider tidak dipanggil lagi.
+func TestDeleteStopsOnCanceledContext(t *testing.T) {
+	called := false
+	c := New("key")
+	c.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res, err := c.Delete(ctx, []string{"f1"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, ingin context.Canceled", err)
+	}
+	if called {
+		t.Error("tidak boleh memanggil provider bila context sudah dibatalkan")
+	}
+	if res.Deleted != 0 || len(res.Failed) != 0 {
+		t.Errorf("result = %+v, ingin kosong", res)
 	}
 }
 

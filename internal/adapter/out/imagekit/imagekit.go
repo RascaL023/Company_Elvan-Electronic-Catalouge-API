@@ -93,6 +93,13 @@ type deleteResponse struct {
 // request. Id kosong (gambar lama tanpa fileId) dilewati; id yang gagal
 // dikembalikan di `failed` sehingga pemanggil bisa mencatatnya tanpa
 // membatalkan operasi DB.
+//
+// Satu batch yang ditolak provider (non-2xx atau body tak terbaca) **tidak**
+// menghentikan batch berikutnya: id batch itu masuk `failed` dan sisanya tetap
+// dicoba — sama seperti Worker lama, supaya kegagalan sesaat tidak meninggalkan
+// berkas yatim di sisa daftar. Error dikembalikan hanya bila permintaan sudah
+// dibatalkan/kedaluwarsa (`ctx.Err()`), karena saat itu tidak ada gunanya
+// melanjutkan; hasil yang sempat terhapus tetap dilaporkan di `result`.
 func (c *Client) Delete(ctx context.Context, fileIDs []string) (port.DeleteResult, error) {
 	ids := compactIDs(fileIDs)
 	if len(ids) == 0 {
@@ -107,9 +114,17 @@ func (c *Client) Delete(ctx context.Context, fileIDs []string) (port.DeleteResul
 		}
 		batch := ids[start:end]
 
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+
 		deleted, err := c.deleteBatch(ctx, batch)
 		if err != nil {
-			return result, err
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return result, ctxErr
+			}
+			result.Failed = append(result.Failed, batch...)
+			continue
 		}
 		result.Deleted += len(deleted)
 		result.Failed = append(result.Failed, unaccounted(batch, deleted)...)

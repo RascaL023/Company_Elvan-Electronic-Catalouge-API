@@ -62,8 +62,8 @@ func (h *handlers) mediaDeleteFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, h.deps.Log, r, err)
 		return
 	}
-	if len(req.FileIDs) == 0 {
-		writeError(w, h.deps.Log, r, validationError("fileIds", "tidak boleh kosong"))
+	if !hasUsableFileID(req.FileIDs) {
+		writeError(w, h.deps.Log, r, validationError("fileIds", "harus berisi minimal satu id"))
 		return
 	}
 
@@ -73,4 +73,17 @@ func (h *handlers) mediaDeleteFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONStatus(w, http.StatusOK, result)
+}
+
+// hasUsableFileID melaporkan ada minimal satu fileId non-kosong. Worker lama
+// membalas 400 untuk `fileIds` yang — setelah id kosong dibuang — tidak
+// menyisakan id apa pun; aturan itu dipertahankan supaya `{"fileIds":[""]}`
+// tidak dijawab 200 `{deleted:0}` padahal tidak ada yang dihapus.
+func hasUsableFileID(fileIDs []string) bool {
+	for _, id := range fileIDs {
+		if id != "" {
+			return true
+		}
+	}
+	return false
 }

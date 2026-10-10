@@ -111,6 +111,29 @@ func TestMediaDeleteFilesRejectsEmptyIDs(t *testing.T) {
 	}
 }
 
+// Worker lama membalas 400 bila setelah id kosong dibuang tidak ada id yang
+// tersisa; BE tidak boleh menjawab 200 `{deleted:0}` untuk daftar semacam itu.
+func TestMediaDeleteFilesRejectsOnlyBlankIDs(t *testing.T) {
+	media := &fakeMedia{}
+	router := newMediaRouter(&fakeAuth{meAdmin: &domain.Admin{ID: "a1"}}, media)
+
+	req := authedRequest(http.MethodDelete, "/api/v1/media/files", `{"fileIds":["",""]}`)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, ingin 400; body=%s", rec.Code, rec.Body.String())
+	}
+	var body errorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Error.Code != codeValidationFailed {
+		t.Errorf("code = %q, ingin %q", body.Error.Code, codeValidationFailed)
+	}
+	if media.deleteID != nil {
+		t.Errorf("use case tidak boleh dipanggil, dapat %v", media.deleteID)
+	}
+}
+
 func TestMediaDeleteFilesCallsUseCase(t *testing.T) {
 	media := &fakeMedia{result: port.DeleteResult{Deleted: 2}}
 	router := newMediaRouter(&fakeAuth{meAdmin: &domain.Admin{ID: "a1"}}, media)

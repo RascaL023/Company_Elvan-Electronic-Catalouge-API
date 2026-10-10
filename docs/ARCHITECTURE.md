@@ -507,7 +507,7 @@ Catatan:
 Adapter `imagekit/` memindahkan logika dari Cloudflare Worker:
 
 - `IssueUploadSignature`: `token = uuid`, `expire = now + 30 menit`, `signature = HMAC-SHA1(privateKey, token + expire)`.
-- `Delete`: batch `POST /v1/files/batch/deleteByFileIds` (maks. 100 id per request), mengembalikan `deleted` dan `failed`.
+- `Delete`: batch `POST /v1/files/batch/deleteByFileIds` (maks. 100 id per request), mengembalikan `deleted` dan `failed`. Satu batch yang ditolak provider **tidak** menghentikan batch berikutnya: id batch itu masuk `failed` dan sisanya tetap dicoba (sama seperti Worker lama, supaya kegagalan sesaat tidak meninggalkan berkas yatim). Error dikembalikan hanya bila permintaan sudah dibatalkan/kedaluwarsa.
 - Private key hanya dibaca dari konfigurasi server, tidak pernah dikirim ke klien.
 
 ### 9.4 Security
@@ -595,9 +595,9 @@ Admin (browser)                API (Go)                      ImageKit
 Perubahan dibanding sekarang:
 
 - **Penghapusan file dilakukan server.** Saat produk dihapus, atau gambar dilepas lewat `PATCH`, use case mengumpulkan `fileId` yang terlepas dan memanggil `ImageStorage.Delete` **setelah commit**. Hari ini FE memanggil delete terpisah sehingga bisa meninggalkan file yatim.
-- Kegagalan hapus di provider tidak membatalkan operasi DB; dicatat di log dengan `fileId`-nya. Jika nanti perlu lebih ketat, tambahkan tabel `image_cleanup` kecil dengan worker retry.
+- Kegagalan hapus di provider tidak membatalkan operasi DB: id yang gagal dikembalikan di `failed` (batch berikutnya tetap diproses, lihat §9.3) dan dicatat di log dengan `fileId`-nya. Jika nanti perlu lebih ketat, tambahkan tabel `image_cleanup` kecil dengan worker retry.
 - Gambar lama tanpa `fileId` (mis. aset lokal) disimpan dengan `file_id = NULL` dan dilewati saat pembersihan.
-- Endpoint `DELETE /media/files` dipertahankan sementara untuk kompatibilitas FE, lalu dihapus setelah FE berhenti memanggilnya.
+- Endpoint `DELETE /media/files` dipertahankan sementara untuk kompatibilitas FE (validasinya mengikuti Worker lama: id kosong dibuang, minimal satu id non-kosong harus tersisa), lalu dihapus setelah FE berhenti memanggilnya.
 
 ---
 

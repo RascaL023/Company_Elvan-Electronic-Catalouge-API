@@ -750,6 +750,11 @@ paths:
         pembersihan server-side (penghapusan otomatis dilakukan server saat
         produk dihapus atau gambar dilepas); akan dihapus setelah FE berhenti
         memanggilnya.
+
+        Id kosong dibuang lebih dulu; bila tidak ada id yang tersisa permintaan
+        dijawab `400`. Kegagalan di provider tidak menggagalkan seluruh
+        permintaan: id yang gagal dikembalikan di `failed` dan id sisanya tetap
+        dicoba (perilaku Worker lama).
       security:
         - cookieAuth: []
       requestBody:
@@ -950,6 +955,9 @@ components:
         fileIds:
           type: array
           minItems: 1
+          description: |
+            Daftar `fileId` provider. Id kosong dibuang sebelum penghapusan;
+            minimal satu id non-kosong harus tersisa, jika tidak `400`.
           items: { type: string }
 
     DeleteResult:
