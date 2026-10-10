@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -216,6 +217,10 @@ func TestErrorMapping(t *testing.T) {
 		{"forbidden", domain.ErrForbidden, http.StatusForbidden, codeForbidden},
 		{"not found", domain.ErrNotFound, http.StatusNotFound, codeNotFound},
 		{"conflict", domain.ErrConflict, http.StatusConflict, codeConflict},
+		{"timeout", context.DeadlineExceeded, http.StatusGatewayTimeout, codeTimeout},
+		// Klien menutup koneksi: query membungkus context.Canceled. Bukan 500
+		// internal (lihat juga TestClientCanceledNotLoggedAsInternal).
+		{"client canceled", errors.Join(errors.New("query gagal"), context.Canceled), statusClientClosedRequest, codeClientClosed},
 		{"internal", errors.New("detail rahasia jangan bocor"), http.StatusInternalServerError, codeInternal},
 	}
 
@@ -243,6 +248,28 @@ func TestErrorMapping(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestClientCanceledNotLoggedAsInternal memastikan pembatalan oleh klien tidak
+// dicatat sebagai error internal (tidak mengotori log), sementara error internal
+// sungguhan tetap dicatat.
+func TestClientCanceledNotLoggedAsInternal(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+
+	var canceledLogs bytes.Buffer
+	rec := httptest.NewRecorder()
+	writeError(rec, slog.New(slog.NewJSONHandler(&canceledLogs, nil)), req,
+		errors.Join(errors.New("query gagal"), context.Canceled))
+	if strings.TrimSpace(canceledLogs.String()) != "" {
+		t.Errorf("pembatalan klien tercatat di log: %s", canceledLogs.String())
+	}
+
+	var internalLogs bytes.Buffer
+	rec = httptest.NewRecorder()
+	writeError(rec, slog.New(slog.NewJSONHandler(&internalLogs, nil)), req, errors.New("rahasia-db"))
+	if !strings.Contains(internalLogs.String(), "error internal") {
+		t.Errorf("error internal sungguhan harus tetap dicatat, log=%q", internalLogs.String())
 	}
 }
 

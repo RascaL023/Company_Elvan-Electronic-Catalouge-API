@@ -405,6 +405,8 @@ Cursor yang `sort`-nya tidak cocok dengan permintaan ditolak (`400 invalid_curso
 | `ErrForbidden` | 403 | `forbidden` |
 | `ErrNotFound` | 404 | `not_found` |
 | `ErrConflict` | 409 | `conflict` |
+| `context.DeadlineExceeded` | 504 | `timeout` (bukan 500; tidak dicatat sebagai error internal) |
+| `context.Canceled` (klien menutup koneksi) | 499 | `client_closed` (bukan 500; tidak dicatat sebagai error internal) |
 | lainnya | 500 | `internal` (detail hanya di log, tidak ke klien) |
 
 ### Middleware (urutan dari luar)

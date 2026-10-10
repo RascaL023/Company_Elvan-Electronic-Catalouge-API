@@ -1092,6 +1092,7 @@ components:
                 - conflict
                 - rate_limited
                 - timeout
+                - client_closed
                 - internal
             message:
               type: string
