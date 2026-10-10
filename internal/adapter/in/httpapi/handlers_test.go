@@ -293,6 +293,67 @@ func TestAnonymousActorUsedForReads(t *testing.T) {
 	}
 }
 
+func TestOptionalAdminOnProductList(t *testing.T) {
+	admin := &domain.Admin{ID: "a1", Email: "admin@example.com"}
+
+	t.Run("sesi sah: actor admin dan respons privat", func(t *testing.T) {
+		cat := &fakeCatalog{}
+		router := NewRouter(Deps{
+			Catalog: cat, Taxonomy: &fakeTaxonomy{},
+			Auth: &fakeAuth{meAdmin: admin}, Transport: CookieTransport{},
+			Log: discardLogger(),
+		})
+		rec := do(t, router, http.MethodGet, "/api/v1/products?includeInactive=true", func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: DefaultSessionCookie, Value: "good"})
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+		}
+		if !cat.lastActor.IsAdmin {
+			t.Error("sesi sah seharusnya membuat actor admin")
+		}
+		if !cat.lastQuery.IncludeInactive {
+			t.Error("query includeInactive seharusnya diteruskan ke use case")
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != cacheControlPrivate {
+			t.Errorf("Cache-Control = %q, ingin %q", cc, cacheControlPrivate)
+		}
+		if etag := rec.Header().Get("ETag"); etag != "" {
+			t.Errorf("ETag respons privat = %q, ingin kosong", etag)
+		}
+	})
+
+	t.Run("tanpa sesi atau sesi basi: tetap publik", func(t *testing.T) {
+		cat := &fakeCatalog{}
+		router := NewRouter(Deps{
+			Catalog: cat, Taxonomy: &fakeTaxonomy{},
+			Auth: &fakeAuth{meErr: domain.ErrUnauthorized}, Transport: CookieTransport{},
+			Log: discardLogger(),
+		})
+
+		rec := do(t, router, http.MethodGet, "/api/v1/products?includeInactive=true", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("tanpa cookie status = %d", rec.Code)
+		}
+		if cat.lastActor.IsAdmin {
+			t.Error("tanpa sesi seharusnya anonim")
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != cacheControlPublic {
+			t.Errorf("Cache-Control = %q, ingin %q", cc, cacheControlPublic)
+		}
+
+		rec = do(t, router, http.MethodGet, "/api/v1/products", func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: DefaultSessionCookie, Value: "stale"})
+		})
+		if rec.Code != http.StatusOK {
+			t.Errorf("cookie basi status = %d, ingin 200 (tetap publik)", rec.Code)
+		}
+		if cat.lastActor.IsAdmin {
+			t.Error("sesi basi seharusnya tetap anonim")
+		}
+	})
+}
+
 func TestTaxonomyEndpoints(t *testing.T) {
 	tax := &fakeTaxonomy{
 		categories: []domain.Category{{ID: "c1", Name: "TV", Slug: "television"}},

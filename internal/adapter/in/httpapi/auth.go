@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 
+	"elvan-catalog-api/internal/application"
 	"elvan-catalog-api/internal/application/auth"
 	"elvan-catalog-api/internal/domain"
 )
@@ -23,6 +24,16 @@ type adminKey struct{}
 func adminFromContext(ctx context.Context) (*domain.Admin, bool) {
 	admin, ok := ctx.Value(adminKey{}).(*domain.Admin)
 	return admin, ok
+}
+
+// actorFromContext menerjemahkan ada/tidaknya admin terautentikasi di context
+// menjadi Actor use case. Dipakai handler yang perilakunya berbeda untuk admin
+// (mis. `includeInactive` pada GET /products).
+func actorFromContext(ctx context.Context) application.Actor {
+	if _, ok := adminFromContext(ctx); ok {
+		return application.Actor{IsAdmin: true}
+	}
+	return application.Anonymous
 }
 
 // requireAdmin menolak request yang tidak membawa sesi admin yang sah.
@@ -48,6 +59,34 @@ func (h *handlers) requireAdmin(next http.Handler) http.Handler {
 				h.deps.Transport.Clear(w)
 			}
 			writeError(w, h.deps.Log, r, err)
+			return
+		}
+
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), adminKey{}, admin)))
+	})
+}
+
+// optionalAdmin melampirkan admin ke context bila request membawa sesi yang
+// sah, tanpa menolak request anonim. Dipakai rute baca publik yang berubah
+// perilaku untuk admin — GET /products memakai sesi ini untuk menghormati
+// `includeInactive`. Sesi yang tidak valid/tidak ada cukup diperlakukan sebagai
+// anonim; tidak ada cookie yang dihapus karena request tetap sah untuk publik.
+func (h *handlers) optionalAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.deps.Auth == nil || h.deps.Transport == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		token, ok := h.deps.Transport.Read(r)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		admin, err := h.deps.Auth.Me(r.Context(), token)
+		if err != nil {
+			next.ServeHTTP(w, r)
 			return
 		}
 

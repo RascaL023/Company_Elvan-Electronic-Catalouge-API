@@ -78,9 +78,10 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 
-	// Baca publik.
+	// Baca publik. `listProducts` dibungkus optionalAdmin: sesi admin yang sah
+	// membuat `includeInactive` dihormati, tanpa menutup akses anonim.
 	mux.HandleFunc("GET /api/v1/catalog", h.catalog)
-	mux.HandleFunc("GET /api/v1/products", h.listProducts)
+	mux.Handle("GET /api/v1/products", h.optionalAdmin(http.HandlerFunc(h.listProducts)))
 	mux.HandleFunc("GET /api/v1/products/{id}", h.getProduct)
 	mux.HandleFunc("GET /api/v1/categories", h.listCategories)
 	mux.HandleFunc("GET /api/v1/categories/{id}", h.getCategory)
