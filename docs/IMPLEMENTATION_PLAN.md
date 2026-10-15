@@ -4,8 +4,9 @@
 > eksekusi yang eksplisit, checklist per fase, dan daftar yang perlu
 > disiapkan di laptop ini.
 >
-> Status: **berjalan** — terakhir diperbarui 2026-10-03
-> Repo ini: `ElectronicWebBE` (Fase 0–2, 4–7 selesai; Fase 3 di repo FE)
+> Status: **berjalan** — terakhir diperbarui 2026-10-11
+> Repo ini: `ElectronicWebBE` (Fase 0–2, 4–7 selesai; Fase 3 selesai di repo FE,
+> branch `feat/integration-api`, belum di-merge/deploy)
 > Frontend: `/home/rascal/Documents/Project/Web/Magang Hardware/ElectronicWeb`
 
 ---
@@ -34,7 +35,7 @@
 | 0 | Skeleton repo, toolchain, config, Makefile, CI, depguard | ✅ selesai (2026-10-01) |
 | 1 | Migration, domain, port, sqlc, adapter Postgres | ✅ selesai (2026-10-01) |
 | 2 | Jalur baca publik (katalog, produk, kategori, brand) | ✅ selesai (2026-10-01) |
-| 3 | Adapter API di FE + switch composition root | ☐ |
+| 3 | Adapter API di FE + switch composition root | ✅ selesai (2026-10-11, repo FE) |
 | 4 | Auth admin + endpoint tulis | ✅ selesai (2026-10-03) |
 | 5 | Modul media (signature, hapus server-side) | ✅ selesai (2026-10-03) |
 | 6 | Importer + verifikasi + cutover VPS | ✅ selesai (2026-10-03) — kode & deploy; cutover = langkah operasional di VPS |
@@ -528,16 +529,25 @@ Ditegakkan `depguard` (lihat Fase 0).
 
 **Dikerjakan di repo FE** (`/home/rascal/Documents/Project/Web/Magang Hardware/ElectronicWeb`).
 
-- [ ] `src/data/api/http-client.ts`: `fetch` dengan base URL dari env + `credentials: 'include'` + parsing error terstandar.
-- [ ] `src/data/api/api-product.repository.ts`, `api-category.repository.ts`, `api-brand.repository.ts` — implement interface di `src/core/repositories/` **tanpa** import Firebase.
-  - [ ] Mapper gambar: API `[{key, fileId}]` ↔ FE `images: string[]` + `imageFileIds?: string[]` (lihat §4).
-  - [ ] `getById` meneruskan `legacy_id` apa adanya (BE yang resolve).
-- [ ] Aktifkan cabang `api` di `src/app/composition.ts` (saat ini sengaja `throw`).
-- [ ] Tambah `VITE_API_BASE_URL` di `.env` + `.env.example` (relatif `/api/v1` untuk satu domain).
-- [ ] Setelah auth (Fase 4) selesai: `src/data/api/api-auth.service.ts` (`login`/`logout`/`onSessionChange` lewat `GET /auth/me`).
-- [ ] Jalankan mode baca dulu: `VITE_API_BASE_URL` aktif, Firebase dibiarkan sebagai cadangan.
+**Status (2026-10-11):** selesai di branch `feat/integration-api` (5 commit di
+atas `dev`, belum di-merge). Verifikasi: `npm run check:boundaries` dan
+`npm run build` hijau; FE+BE sudah dicoba jalan bersama oleh pemilik repo.
 
-**Kriteria lulus:** halaman publik + halaman detail berjalan penuh dari API; tidak ada import Firebase di jalur `api`.
+- [x] `src/data/api/http-client.ts`: `fetch` dengan base URL dari env + `credentials: 'include'` + parsing error terstandar (`ApiError` dari envelope `{error:{code,message,details}}`).
+- [x] `src/data/api/api-product.repository.ts`, `api-category.repository.ts`, `api-brand.repository.ts` — implement interface di `src/core/repositories/` **tanpa** import Firebase.
+  - [x] Mapper gambar: API `[{key, fileId}]` ↔ FE `images: string[]` + `imageFileIds?: string[]` (lihat §4).
+  - [x] `getById` meneruskan `legacy_id` apa adanya (BE yang resolve).
+- [x] Aktifkan cabang `api` di `src/app/composition.ts` (dipilih lewat `VITE_API_BASE_URL`; Firebase tetap jadi cadangan).
+- [x] Tambah `VITE_API_BASE_URL` di `.env` + `.env.example` (relatif `/api/v1` untuk satu domain) + override per-concern `VITE_AUTH_BACKEND`/`VITE_MEDIA_BACKEND` untuk cutover bertahap.
+- [x] Setelah auth (Fase 4) selesai: `src/data/api/api-auth.service.ts` (`login`/`logout`/`onSessionChange` lewat `GET /auth/me`, cookie HttpOnly).
+- [x] Jalankan mode baca dulu: `VITE_API_BASE_URL` aktif, Firebase dibiarkan sebagai cadangan.
+
+**Kriteria lulus:** halaman publik + halaman detail berjalan penuh dari API; tidak ada import Firebase di jalur `api`. ✅ (dijaga `scripts/check-boundaries.sh`)
+
+**Sisa yang disengaja:** bundle FE masih memuat Firebase (~175 kB) karena
+implementasi Firebase tetap ada sebagai jalur rollback; pembersihannya menunggu
+cutover terbukti mulus. Switch produksi (set `VITE_API_BASE_URL=/api/v1` saat
+build) dilakukan di Fase 6/cutover.
 
 ---
 
@@ -565,7 +575,7 @@ Ditegakkan `depguard` (lihat Fase 0).
 
 ### Fase 5 — Modul media
 
-**Hasil:** Cloudflare Worker bisa dimatikan. ✅ (jalur BE; penyesuaian FE di repo FE)
+**Hasil:** Cloudflare Worker bisa dimatikan. ✅ (jalur BE + adapter FE di `feat/integration-api`)
 
 - [x] `internal/adapter/out/imagekit/`:
   - [x] `IssueUploadSignature`: `token = uuid`, `expire = now + 30m`, `signature = HMAC-SHA1(privateKey, token + expire)` (sama persis kontrak Worker).
@@ -574,7 +584,7 @@ Ditegakkan `depguard` (lihat Fase 0).
 - [x] `internal/application/media/`: `IssueUploadSignature`, `DeleteImages`.
 - [x] Endpoint: `GET /api/v1/media/signature` (wajib sesi admin — **bukan** cek `Origin` saja), `DELETE /api/v1/media/files` (transisi).
 - [x] Hapus gambar **server-side**: saat produk dihapus atau gambar dilepas via `PATCH`, kumpulkan `fileId` lepas lalu panggil `Delete` **setelah commit** (best-effort, dicatat di log). `fileId` kosong (gambar lama) dilewati.
-- [ ] FE: arahkan `VITE_IMAGEKIT_AUTH_ENDPOINT` ke `.../api/v1/media/signature`; hentikan pemanggilan delete klien (`useDeleteProduct.ts`, `ProductForm.tsx`) pada jalur API. *(repo FE)*
+- [x] FE: signature dari `GET /api/v1/media/signature` lewat `ApiImageUploadService` (`VITE_MEDIA_BACKEND=api`); delete klien dilewati di jalur API karena `cleansUpImagesServerSide = true` (`useDeleteProduct.ts`, `ProductForm.tsx`). `VITE_IMAGEKIT_AUTH_ENDPOINT` (Cloudflare Worker) tetap dipertahankan sebagai jalur rollback `VITE_MEDIA_BACKEND=firebase`. *(repo FE, branch `feat/integration-api`)*
 
 **Kriteria lulus:** admin upload gambar lewat BE (signature), hapus produk membersihkan file di ImageKit tanpa file yatim; tanpa sesi → `401`. ✅ (diverifikasi unit adapter + httptest handler; pembersihan diuji di use case catalog)
 
