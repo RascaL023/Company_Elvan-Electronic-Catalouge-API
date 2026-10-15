@@ -405,6 +405,8 @@ Cursor yang `sort`-nya tidak cocok dengan permintaan ditolak (`400 invalid_curso
 | `ErrForbidden` | 403 | `forbidden` |
 | `ErrNotFound` | 404 | `not_found` |
 | `ErrConflict` | 409 | `conflict` |
+| `context.DeadlineExceeded` | 504 | `timeout` (bukan 500; tidak dicatat sebagai error internal) |
+| `context.Canceled` (klien menutup koneksi) | 499 | `client_closed` (bukan 500; tidak dicatat sebagai error internal) |
 | lainnya | 500 | `internal` (detail hanya di log, tidak ke klien) |
 
 ### Middleware (urutan dari luar)
@@ -505,7 +507,7 @@ Catatan:
 Adapter `imagekit/` memindahkan logika dari Cloudflare Worker:
 
 - `IssueUploadSignature`: `token = uuid`, `expire = now + 30 menit`, `signature = HMAC-SHA1(privateKey, token + expire)`.
-- `Delete`: batch `POST /v1/files/batch/deleteByFileIds` (maks. 100 id per request), mengembalikan `deleted` dan `failed`.
+- `Delete`: batch `POST /v1/files/batch/deleteByFileIds` (maks. 100 id per request), mengembalikan `deleted` dan `failed`. Satu batch yang ditolak provider **tidak** menghentikan batch berikutnya: id batch itu masuk `failed` dan sisanya tetap dicoba (sama seperti Worker lama, supaya kegagalan sesaat tidak meninggalkan berkas yatim). Error dikembalikan hanya bila permintaan sudah dibatalkan/kedaluwarsa.
 - Private key hanya dibaca dari konfigurasi server, tidak pernah dikirim ke klien.
 
 ### 9.4 Security
@@ -593,9 +595,9 @@ Admin (browser)                API (Go)                      ImageKit
 Perubahan dibanding sekarang:
 
 - **Penghapusan file dilakukan server.** Saat produk dihapus, atau gambar dilepas lewat `PATCH`, use case mengumpulkan `fileId` yang terlepas dan memanggil `ImageStorage.Delete` **setelah commit**. Hari ini FE memanggil delete terpisah sehingga bisa meninggalkan file yatim.
-- Kegagalan hapus di provider tidak membatalkan operasi DB; dicatat di log dengan `fileId`-nya. Jika nanti perlu lebih ketat, tambahkan tabel `image_cleanup` kecil dengan worker retry.
+- Kegagalan hapus di provider tidak membatalkan operasi DB: id yang gagal dikembalikan di `failed` (batch berikutnya tetap diproses, lihat §9.3) dan dicatat di log dengan `fileId`-nya. Jika nanti perlu lebih ketat, tambahkan tabel `image_cleanup` kecil dengan worker retry.
 - Gambar lama tanpa `fileId` (mis. aset lokal) disimpan dengan `file_id = NULL` dan dilewati saat pembersihan.
-- Endpoint `DELETE /media/files` dipertahankan sementara untuk kompatibilitas FE, lalu dihapus setelah FE berhenti memanggilnya.
+- Endpoint `DELETE /media/files` dipertahankan sementara untuk kompatibilitas FE (validasinya mengikuti Worker lama: id kosong dibuang, minimal satu id non-kosong harus tersisa), lalu dihapus setelah FE berhenti memanggilnya.
 
 ---
 
@@ -677,6 +679,35 @@ Internet ──▶ Caddy (TLS otomatis)
 3. **Admin:** buat ulang lewat `adminctl`, lalu reset password (hash Firebase tidak dipakai).
 4. **Verifikasi:** bandingkan jumlah baris, sampel produk, dan hasil `GET /catalog` vs Firestore.
 5. **Cutover:** FE memakai adapter API (switch di composition root FE), Worker dimatikan setelah `media` API terbukti, Firebase dibiarkan read-only sementara sebagai cadangan.
+
+### 16.1 Format file ekspor (kontrak `cmd/importer`)
+
+Satu berkas JSON berisi tiga koleksi. Field `legacy_id` **wajib** — itu id
+Firestore (dokumen), dipakai sebagai kunci idempoten. `created_at`/`updatedAt`
+opsional (ISO-8601); bila kosong, database memakai `now()`.
+
+```jsonc
+{
+  "categories": [
+    {"legacy_id": "<firestore-id>", "name": "…", "slug": "…", "description": "…",
+     "createdAt": "2024-05-01T00:00:00Z", "updatedAt": "…"}
+  ],
+  "brands": [
+    {"legacy_id": "…", "name": "…", "slug": "…", "createdAt": "…", "updatedAt": "…"}
+  ],
+  "products": [
+    {"legacy_id": "…", "name": "…", "slug": "…", "price": 1350000,
+     "description": "…", "category": "television", "brand": "polytron",
+     "images": ["assets/…jpg"], "imageFileIds": ["fileId"],   // array paralel (§4)
+     "rating": {"rate": 4.4, "count": 85},
+     "isActive": true, "createdAt": "…", "updatedAt": "…"}
+  ],
+  "catalog_snapshot": {}   // boleh ada; otomatis tidak dipakai (hanya proyeksi)
+}
+```
+
+Catatan: `brand` boleh kosong (produk tanpa brand); `isActive` yang hilang
+berarti `true` (perilaku asli FE).
 
 ---
 

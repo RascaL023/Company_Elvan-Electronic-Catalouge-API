@@ -1,0 +1,47 @@
+# Caddyfile — satu domain: FE statis + API (ARCHITECTURE §15).
+#
+# Env diisi oleh compose.yaml:
+#   SITE_ADDRESS  alamat listen, mis. ":80" (Caddy auto-HTTPS saat :443 publik)
+#   SITE_EMAIL    email untuk sertifikat TLS (ACME)
+#   API_ORIGIN    upstream API, mis. "api:8080"
+#
+# Catatan: /healthz & /readyz ikut di-proxy supaya uptime check menembus API.
+
+{
+	email {$SITE_EMAIL}
+}
+
+{$SITE_ADDRESS} {
+	# API publik + kesehatan.
+	handle /api/* {
+		reverse_proxy {$API_ORIGIN}
+	}
+	handle /healthz {
+		reverse_proxy {$API_ORIGIN}
+	}
+	handle /readyz {
+		reverse_proxy {$API_ORIGIN}
+	}
+
+	# Sisanya = build statis FE (hasil `npm run build` di repo FE).
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Header dasar keamanan + kompresi.
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	encode gzip
+
+	# Log akses ke stdout (dikumpulkan docker).
+	log {
+		output stdout
+		format console
+	}
+}

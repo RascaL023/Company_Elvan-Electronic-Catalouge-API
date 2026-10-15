@@ -11,3 +11,6 @@ coverage.*
 .env
 .env.*
 !.env.example
+
+# Hasil build FE yang di-mount Caddy saat deploy (bukan bagian repo BE)
+deploy/site/

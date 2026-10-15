@@ -46,6 +46,17 @@ jobs:
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
           "$(go env GOPATH)/bin/golangci-lint" run
 
+      # Kode sqlcgen adalah hasil generate dari db/queries — kalau query diubah
+      # tanpa `make sqlc`, gate ini merah (docs/DEVELOPER_GUIDE.md §Alur kerja).
+      # sqlc membaca skema dari db/migrations, jadi tidak butuh koneksi DB.
+      - name: sqlc (setup v1.31.1)
+        uses: sqlc-dev/setup-sqlc@v5
+        with:
+          sqlc-version: '1.31.1'
+
+      - name: sqlc diff (kode generate harus sinkron)
+        run: sqlc diff
+
       - name: migrate (goose)
         run: |
           go install github.com/pressly/goose/v3/cmd/goose@v3.28.0
@@ -56,3 +67,12 @@ jobs:
 
       - name: go build
         run: go build ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Versi CLI dipin supaya pemeriksaan kontrak tidak berubah sendiri saat
+      # rilis baru @redocly/cli keluar.
+      - name: lint OpenAPI
+        run: npx --yes @redocly/cli@2.64.0 lint api/openapi.yaml

@@ -13,8 +13,10 @@ FROM sessions
 WHERE token_hash = sqlc.arg('token_hash');
 
 -- name: TouchSession :exec
+-- Waktu eksplisit (bukan now()) supaya pemanggil bisa menguji/debounce kapan
+-- last_seen_at diperbarui.
 UPDATE sessions
-SET last_seen_at = now()
+SET last_seen_at = sqlc.arg('at')
 WHERE token_hash = sqlc.arg('token_hash');
 
 -- name: DeleteSession :exec
