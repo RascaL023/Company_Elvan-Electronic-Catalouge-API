@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -216,6 +217,10 @@ func TestErrorMapping(t *testing.T) {
 		{"forbidden", domain.ErrForbidden, http.StatusForbidden, codeForbidden},
 		{"not found", domain.ErrNotFound, http.StatusNotFound, codeNotFound},
 		{"conflict", domain.ErrConflict, http.StatusConflict, codeConflict},
+		{"timeout", context.DeadlineExceeded, http.StatusGatewayTimeout, codeTimeout},
+		// Klien menutup koneksi: query membungkus context.Canceled. Bukan 500
+		// internal (lihat juga TestClientCanceledNotLoggedAsInternal).
+		{"client canceled", errors.Join(errors.New("query gagal"), context.Canceled), statusClientClosedRequest, codeClientClosed},
 		{"internal", errors.New("detail rahasia jangan bocor"), http.StatusInternalServerError, codeInternal},
 	}
 
@@ -243,6 +248,28 @@ func TestErrorMapping(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestClientCanceledNotLoggedAsInternal memastikan pembatalan oleh klien tidak
+// dicatat sebagai error internal (tidak mengotori log), sementara error internal
+// sungguhan tetap dicatat.
+func TestClientCanceledNotLoggedAsInternal(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+
+	var canceledLogs bytes.Buffer
+	rec := httptest.NewRecorder()
+	writeError(rec, slog.New(slog.NewJSONHandler(&canceledLogs, nil)), req,
+		errors.Join(errors.New("query gagal"), context.Canceled))
+	if strings.TrimSpace(canceledLogs.String()) != "" {
+		t.Errorf("pembatalan klien tercatat di log: %s", canceledLogs.String())
+	}
+
+	var internalLogs bytes.Buffer
+	rec = httptest.NewRecorder()
+	writeError(rec, slog.New(slog.NewJSONHandler(&internalLogs, nil)), req, errors.New("rahasia-db"))
+	if !strings.Contains(internalLogs.String(), "error internal") {
+		t.Errorf("error internal sungguhan harus tetap dicatat, log=%q", internalLogs.String())
 	}
 }
 
@@ -291,6 +318,67 @@ func TestAnonymousActorUsedForReads(t *testing.T) {
 	if !cat.lastQuery.IncludeInactive {
 		t.Error("query mentah seharusnya diteruskan ke use case")
 	}
+}
+
+func TestOptionalAdminOnProductList(t *testing.T) {
+	admin := &domain.Admin{ID: "a1", Email: "admin@example.com"}
+
+	t.Run("sesi sah: actor admin dan respons privat", func(t *testing.T) {
+		cat := &fakeCatalog{}
+		router := NewRouter(Deps{
+			Catalog: cat, Taxonomy: &fakeTaxonomy{},
+			Auth: &fakeAuth{meAdmin: admin}, Transport: CookieTransport{},
+			Log: discardLogger(),
+		})
+		rec := do(t, router, http.MethodGet, "/api/v1/products?includeInactive=true", func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: DefaultSessionCookie, Value: "good"})
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+		}
+		if !cat.lastActor.IsAdmin {
+			t.Error("sesi sah seharusnya membuat actor admin")
+		}
+		if !cat.lastQuery.IncludeInactive {
+			t.Error("query includeInactive seharusnya diteruskan ke use case")
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != cacheControlPrivate {
+			t.Errorf("Cache-Control = %q, ingin %q", cc, cacheControlPrivate)
+		}
+		if etag := rec.Header().Get("ETag"); etag != "" {
+			t.Errorf("ETag respons privat = %q, ingin kosong", etag)
+		}
+	})
+
+	t.Run("tanpa sesi atau sesi basi: tetap publik", func(t *testing.T) {
+		cat := &fakeCatalog{}
+		router := NewRouter(Deps{
+			Catalog: cat, Taxonomy: &fakeTaxonomy{},
+			Auth: &fakeAuth{meErr: domain.ErrUnauthorized}, Transport: CookieTransport{},
+			Log: discardLogger(),
+		})
+
+		rec := do(t, router, http.MethodGet, "/api/v1/products?includeInactive=true", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("tanpa cookie status = %d", rec.Code)
+		}
+		if cat.lastActor.IsAdmin {
+			t.Error("tanpa sesi seharusnya anonim")
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != cacheControlPublic {
+			t.Errorf("Cache-Control = %q, ingin %q", cc, cacheControlPublic)
+		}
+
+		rec = do(t, router, http.MethodGet, "/api/v1/products", func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: DefaultSessionCookie, Value: "stale"})
+		})
+		if rec.Code != http.StatusOK {
+			t.Errorf("cookie basi status = %d, ingin 200 (tetap publik)", rec.Code)
+		}
+		if cat.lastActor.IsAdmin {
+			t.Error("sesi basi seharusnya tetap anonim")
+		}
+	})
 }
 
 func TestTaxonomyEndpoints(t *testing.T) {

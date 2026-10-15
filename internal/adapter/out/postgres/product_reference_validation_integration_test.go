@@ -27,6 +27,7 @@ func newWriteService(pool *pgxpool.Pool) *catalog.Service {
 		NewBrandRepository(pool),
 		NewTxManager(pool),
 		nil,
+		nil,
 	)
 }
 

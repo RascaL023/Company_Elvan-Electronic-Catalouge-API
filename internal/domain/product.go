@@ -32,6 +32,10 @@ var (
 	nonSlugRE = regexp.MustCompile(`[^a-z0-9]+`)
 )
 
+// ValidSlug melaporkan apakah s berupa slug yang sah (huruf kecil, angka,
+// tanda hubung). Dipakai validasi patch dan pembuatan kategori/brand.
+func ValidSlug(s string) bool { return slugRE.MatchString(s) }
+
 // Slugify mengubah teks menjadi slug: huruf kecil, non-alfanumerik menjadi "-",
 // tanpa tanda hubung di ujung. Dipakai server saat slug tidak dikirim klien.
 func Slugify(s string) string {

@@ -17,6 +17,11 @@ import (
 // cacheControlPublic dipakai untuk endpoint baca publik (ARCHITECTURE §13).
 const cacheControlPublic = "public, max-age=60"
 
+// cacheControlPrivate dipakai untuk respons yang isinya bergantung pada sesi
+// admin (mis. daftar produk yang menyertakan produk nonaktif). Shared cache
+// tidak boleh menyajikannya ke pengunjung anonim.
+const cacheControlPrivate = "private, no-store"
+
 func (h *handlers) healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -54,13 +59,18 @@ func (h *handlers) catalog(w http.ResponseWriter, r *http.Request) {
 }
 
 // listProducts: GET /api/v1/products.
+//
+// Rute ini publik, tapi dibungkus `optionalAdmin`: sesi admin yang sah membuat
+// use case menghormati `includeInactive`. Karena isinya bisa berbeda per sesi,
+// respons admin tidak boleh masuk shared cache.
 func (h *handlers) listProducts(w http.ResponseWriter, r *http.Request) {
 	q, err := parseProductQuery(r)
 	if err != nil {
 		writeError(w, h.deps.Log, r, err)
 		return
 	}
-	page, err := h.deps.Catalog.List(r.Context(), q, application.Anonymous)
+	actor := actorFromContext(r.Context())
+	page, err := h.deps.Catalog.List(r.Context(), q, actor)
 	if err != nil {
 		writeError(w, h.deps.Log, r, err)
 		return
@@ -71,11 +81,16 @@ func (h *handlers) listProducts(w http.ResponseWriter, r *http.Request) {
 		c := page.Cursor
 		cursor = &c
 	}
-	writeJSONCached(w, r, http.StatusOK, productListDTO{
+	body := productListDTO{
 		Products: toCatalogProductDTOs(page.Products),
 		HasMore:  page.HasMore,
 		Cursor:   cursor,
-	})
+	}
+	if actor.IsAdmin {
+		writeJSONPrivate(w, body)
+		return
+	}
+	writeJSONCached(w, r, http.StatusOK, body)
 }
 
 // getProduct: GET /api/v1/products/{id} — id UUID atau legacy (URL lama).
@@ -208,6 +223,25 @@ func writeJSONCached(w http.ResponseWriter, r *http.Request, status int, v any) 
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// writeJSONPrivate menulis JSON dengan `Cache-Control: private, no-store`.
+// Dipakai respons yang bergantung pada sesi admin supaya tidak pernah diambil
+// dari shared cache, dan tidak memakai ETag (304 bisa menyamakan respons admin
+// dengan respons anonim yang beda isi).
+func writeJSONPrivate(w http.ResponseWriter, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		writeJSONStatus(w, http.StatusInternalServerError, errorBody{Error: errorDetail{
+			Code:    codeInternal,
+			Message: "Terjadi kesalahan internal",
+		}})
+		return
+	}
+	w.Header().Set("Cache-Control", cacheControlPrivate)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }
 

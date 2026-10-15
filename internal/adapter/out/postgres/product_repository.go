@@ -135,7 +135,8 @@ func (r *ProductRepository) GetByID(ctx context.Context, id string) (*domain.Pro
 // Create menyimpan produk baru beserta gambarnya. Pemanggil sebaiknya
 // membungkusnya dalam TxManager agar atomik.
 func (r *ProductRepository) Create(ctx context.Context, p domain.Product) (*domain.Product, error) {
-	row, err := querier(ctx, r.pool).CreateProduct(ctx, sqlcgen.CreateProductParams{
+	qs := querier(ctx, r.pool)
+	row, err := qs.CreateProduct(ctx, sqlcgen.CreateProductParams{
 		Name:        p.Name,
 		Slug:        p.Slug,
 		Price:       p.Price,
@@ -150,7 +151,7 @@ func (r *ProductRepository) Create(ctx context.Context, p domain.Product) (*doma
 		return nil, MapError(err)
 	}
 
-	if err := r.replaceImages(ctx, row.ID, p.Images); err != nil {
+	if err := replaceImages(ctx, qs, row.ID, p.Images); err != nil {
 		return nil, err
 	}
 
@@ -193,7 +194,7 @@ func (r *ProductRepository) Update(ctx context.Context, id string, patch domain.
 	}
 
 	if patch.Images != nil {
-		if err := r.replaceImages(ctx, uid, *patch.Images); err != nil {
+		if err := replaceImages(ctx, querier(ctx, r.pool), uid, *patch.Images); err != nil {
 			return nil, err
 		}
 	}
@@ -338,9 +339,8 @@ func (r *ProductRepository) loadImages(ctx context.Context, productID uuid.UUID)
 }
 
 // replaceImages mengganti seluruh gambar produk dengan daftar baru (urut sesuai
-// index = position).
-func (r *ProductRepository) replaceImages(ctx context.Context, productID uuid.UUID, images []domain.Image) error {
-	qs := querier(ctx, r.pool)
+// index = position). Package-level agar dipakai juga oleh adapter importer.
+func replaceImages(ctx context.Context, qs *sqlcgen.Queries, productID uuid.UUID, images []domain.Image) error {
 	if err := qs.DeleteProductImages(ctx, productID); err != nil {
 		return MapError(err)
 	}

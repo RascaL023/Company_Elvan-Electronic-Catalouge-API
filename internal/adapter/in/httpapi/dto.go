@@ -17,6 +17,27 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format(isoMillisFormat)
 }
 
+// maxRequestBody membatasi ukuran body JSON (ARCHITECTURE §13).
+const maxRequestBody = 1 << 20 // 1 MiB
+
+// adminDTO adalah admin yang sedang login (dipakai /auth/me dan respons login).
+// `passwordHash` tidak pernah ikut.
+type adminDTO struct {
+	ID        string `json:"id"`
+	Email     string `json:"email"`
+	CreatedAt string `json:"createdAt"`
+}
+
+func toAdminDTO(a domain.Admin) adminDTO {
+	return adminDTO{ID: a.ID, Email: a.Email, CreatedAt: formatTime(a.CreatedAt)}
+}
+
+// sessionDTO adalah respons login: admin + masa berlaku sesi.
+type sessionDTO struct {
+	Admin     adminDTO `json:"admin"`
+	ExpiresAt string   `json:"expiresAt"`
+}
+
 type ratingDTO struct {
 	Rate  float64 `json:"rate"`
 	Count int     `json:"count"`

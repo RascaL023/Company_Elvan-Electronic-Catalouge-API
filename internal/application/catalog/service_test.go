@@ -18,6 +18,8 @@ type fakeRepo struct {
 	listIncludeInactive    bool
 	writeErr               error
 	writeCalls             int
+	getByID                *domain.Product
+	deletedImages          []domain.Image
 }
 
 func (f *fakeRepo) ListAll(_ context.Context, includeInactive bool) ([]domain.CatalogProduct, error) {
@@ -31,6 +33,9 @@ func (f *fakeRepo) List(_ context.Context, q port.ProductQuery) (port.ProductPag
 }
 
 func (f *fakeRepo) GetByID(context.Context, string) (*domain.Product, error) {
+	if f.getByID != nil {
+		return f.getByID, nil
+	}
 	return nil, domain.ErrNotFound
 }
 
@@ -55,7 +60,7 @@ func (f *fakeRepo) Delete(context.Context, string) ([]domain.Image, error) {
 	if f.writeErr != nil {
 		return nil, f.writeErr
 	}
-	return nil, nil
+	return f.deletedImages, nil
 }
 
 // fakeCategoryRepo/fakeBrandRepo hanya mengimplementasikan GetBySlug secara
@@ -127,10 +132,28 @@ func (f *fakeBrandRepo) Delete(context.Context, string) error { return nil }
 // newTestService merangkai Service dengan taxonomy fake: hanya "television" dan
 // "sharp" yang dianggap ada.
 func newTestService(repo *fakeRepo, tx *fakeTx) *Service {
+	return newTestServiceWithCleaner(repo, tx, nil)
+}
+
+func newTestServiceWithCleaner(repo *fakeRepo, tx *fakeTx, cleaner ImageCleaner) *Service {
 	return New(repo,
 		&fakeCategoryRepo{bySlug: map[string]domain.Category{"television": {Slug: "television"}}},
 		&fakeBrandRepo{bySlug: map[string]domain.Brand{"sharp": {Slug: "sharp"}}},
-		tx, discardLogger())
+		tx, cleaner, discardLogger())
+}
+
+// fakeCleaner mencatat fileId yang diminta dihapus di provider.
+type fakeCleaner struct {
+	calls [][]string
+	err   error
+}
+
+func (f *fakeCleaner) DeleteImages(_ context.Context, fileIDs []string) (port.DeleteResult, error) {
+	f.calls = append(f.calls, fileIDs)
+	if f.err != nil {
+		return port.DeleteResult{}, f.err
+	}
+	return port.DeleteResult{Deleted: len(fileIDs)}, nil
 }
 
 // fakeTx menjalankan fn apa adanya dan mencatat berapa kali dipakai.
@@ -297,6 +320,84 @@ func TestValidateRefsRejectsUnknownSlug(t *testing.T) {
 
 // TestValidateRefsAllowsEmptyBrandAndKnownSlugs memastikan validasi tidak
 // menolak kasus sah: brand kosong (tanpa brand) dan field yang tidak diubah.
+// TestDeleteCleansUpImagesAfterCommit mengunci ARCHITECTURE §11: saat produk
+// dihapus, fileId gambar yang terlepas dibersihkan di provider **setelah**
+// transaksi sukses.
+func TestDeleteCleansUpImagesAfterCommit(t *testing.T) {
+	repo := &fakeRepo{deletedImages: []domain.Image{
+		{Key: "a", FileID: "file-a"},
+		{Key: "b", FileID: "file-b"},
+		{Key: "lama", FileID: ""}, // gambar lama tanpa fileId dilewati
+	}}
+	cleaner := &fakeCleaner{}
+	svc := newTestServiceWithCleaner(repo, &fakeTx{}, cleaner)
+
+	if err := svc.Delete(context.Background(), "some-id"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(cleaner.calls) != 1 {
+		t.Fatalf("cleaner dipanggil %d kali, ingin 1", len(cleaner.calls))
+	}
+	got := cleaner.calls[0]
+	if len(got) != 2 || got[0] != "file-a" || got[1] != "file-b" {
+		t.Errorf("fileId dihapus = %v, ingin file-a & file-b (fileId kosong dilewati)", got)
+	}
+}
+
+// TestDeleteWithoutCleanerDoesNotPanic memastikan catalog tetap berjalan bila
+// media belum dikonfigurasi (cleaner nil).
+func TestDeleteWithoutCleanerDoesNotPanic(t *testing.T) {
+	repo := &fakeRepo{deletedImages: []domain.Image{{Key: "a", FileID: "file-a"}}}
+	svc := newTestServiceWithCleaner(repo, &fakeTx{}, nil)
+
+	if err := svc.Delete(context.Background(), "some-id"); err != nil {
+		t.Fatalf("Delete tanpa cleaner: %v", err)
+	}
+}
+
+// TestUpdateCleansUpReplacedImages memastikan gambar yang diganti dibersihkan
+// di provider, sedangkan gambar yang masih dipakai tidak.
+func TestUpdateCleansUpReplacedImages(t *testing.T) {
+	repo := &fakeRepo{getByID: &domain.Product{Images: []domain.Image{
+		{Key: "a", FileID: "file-a"},
+		{Key: "b", FileID: "file-b"},
+	}}}
+	cleaner := &fakeCleaner{}
+	svc := newTestServiceWithCleaner(repo, &fakeTx{}, cleaner)
+
+	next := []domain.Image{{Key: "b", FileID: "file-b"}, {Key: "c", FileID: "file-c"}}
+	if _, err := svc.Update(context.Background(), "some-id", domain.ProductPatch{Images: &next}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if len(cleaner.calls) != 1 {
+		t.Fatalf("cleaner dipanggil %d kali, ingin 1", len(cleaner.calls))
+	}
+	got := cleaner.calls[0]
+	if len(got) != 1 || got[0] != "file-a" {
+		t.Errorf("fileId dihapus = %v, ingin hanya file-a (file-b masih dipakai)", got)
+	}
+}
+
+// TestUpdateDoesNotCleanupWhenRepoFails memastikan pembersihan hanya terjadi
+// setelah commit: bila update gagal, tidak ada file yang dihapus.
+func TestUpdateDoesNotCleanupWhenRepoFails(t *testing.T) {
+	repo := &fakeRepo{
+		getByID:  &domain.Product{Images: []domain.Image{{Key: "a", FileID: "file-a"}}},
+		writeErr: domain.ErrConflict,
+	}
+	cleaner := &fakeCleaner{}
+	svc := newTestServiceWithCleaner(repo, &fakeTx{}, cleaner)
+
+	next := []domain.Image{}
+	if _, err := svc.Update(context.Background(), "some-id", domain.ProductPatch{Images: &next}); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("Update = %v, ingin ErrConflict", err)
+	}
+	if len(cleaner.calls) != 0 {
+		t.Errorf("cleaner dipanggil walau update gagal: %v", cleaner.calls)
+	}
+}
+
 func TestValidateRefsAllowsEmptyBrandAndKnownSlugs(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := newTestService(repo, &fakeTx{})

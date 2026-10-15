@@ -14,6 +14,13 @@ type Admin struct {
 	CreatedAt    time.Time
 }
 
+// NormalizeEmail menormalkan email untuk lookup dan penyimpanan: trim dan
+// huruf kecil. Dipakai adminctl dan use case auth supaya "Admin@X" dan
+// "admin@x" selalu menunjuk akun yang sama.
+func NormalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 // Validate memeriksa invarian Admin. `PasswordHash` wajib terisi untuk admin
 // yang disimpan; verifikasi password dilakukan lewat port.PasswordHasher.
 func (a Admin) Validate() error {

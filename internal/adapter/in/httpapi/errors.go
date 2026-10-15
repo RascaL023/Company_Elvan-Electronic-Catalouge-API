@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -17,7 +18,23 @@ const (
 	codeForbidden        = "forbidden"
 	codeNotFound         = "not_found"
 	codeConflict         = "conflict"
+	codeRateLimited      = "rate_limited"
+	codeTimeout          = "timeout"
+	codeClientClosed     = "client_closed"
 	codeInternal         = "internal"
+)
+
+// statusClientClosedRequest (499) bukan status standar Go/HTTP; ini konvensi
+// nginx "client closed request" untuk koneksi yang ditutup klien. Body respons
+// praktis tak sampai (klien sudah pergi), jadi nilainya hanya berguna di access
+// log dan agar pemetaan ini eksplisit — bukan 500 internal.
+const statusClientClosedRequest = 499
+
+// Sentinel lokal adapter (bukan error domain) supaya middleware bisa memakai
+// error mapper yang sama tanpa membocorkan konsepnya ke domain.
+var (
+	errForbiddenRequest   = errors.New("forbidden request")
+	errRateLimitedRequest = errors.New("rate limited")
 )
 
 type fieldDetail struct {
@@ -80,6 +97,31 @@ func writeError(w http.ResponseWriter, log *slog.Logger, r *http.Request, err er
 		status = http.StatusConflict
 		code = codeConflict
 		message = "Konflik data"
+
+	case errors.Is(err, errRateLimitedRequest):
+		status = http.StatusTooManyRequests
+		code = codeRateLimited
+		message = "Terlalu banyak percobaan; coba lagi nanti"
+
+	case errors.Is(err, context.DeadlineExceeded):
+		// Request/query melewati REQUEST_TIMEOUT / DB_STATEMENT_TIMEOUT.
+		// Bukan bug server, jadi tidak dicatat sebagai error internal.
+		status = http.StatusGatewayTimeout
+		code = codeTimeout
+		message = "Permintaan memakan waktu terlalu lama; coba lagi"
+
+	case errors.Is(err, context.Canceled):
+		// Klien menutup koneksi (tab ditutup/navigasi) sebelum handler selesai,
+		// jadi context request dibatalkan dan query ikut berhenti. Ini bukan bug
+		// server: jangan dicatat sebagai error internal — cukup access log.
+		status = statusClientClosedRequest
+		code = codeClientClosed
+		message = "Klien menutup permintaan"
+
+	case errors.Is(err, errForbiddenRequest):
+		status = http.StatusForbidden
+		code = codeForbidden
+		message = "Tidak diizinkan"
 
 	default:
 		if log != nil {
