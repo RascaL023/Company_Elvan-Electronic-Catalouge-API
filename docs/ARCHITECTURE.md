@@ -669,7 +669,9 @@ Internet ──▶ Caddy (TLS otomatis)
 
 ## 16. Migrasi dari Firebase
 
-1. **Ekspor Firestore** (skrip yang sudah ada di repo FE: `scripts/migrate-firestore.cjs`) ke JSON.
+1. **Ekspor Firestore** ke JSON dengan skrip di repo FE: `npm run export:firestore`
+   (`scripts/export-firestore.cjs`, format §16.1 + preflight). *Bukan*
+   `migrate-firestore.cjs` — skrip itu menyalin data antar-project Firebase.
 2. **`cmd/importer`** membaca JSON dan memasukkan ke Postgres dalam satu transaksi:
    - urutan: kategori → brand → produk (+ gambar);
    - `legacy_id` diisi dari id Firestore sehingga impor **idempoten** (boleh dijalankan ulang);

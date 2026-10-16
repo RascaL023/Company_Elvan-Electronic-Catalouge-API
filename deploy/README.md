@@ -50,8 +50,18 @@ curl -fsS http://localhost/healthz    # -> ok
 
 ## 5. Impor data Firestore
 
-Ekspor JSON dari repo FE (`scripts/migrate-firestore.cjs`), lalu jalankan
-binari `importer` yang ikut di dalam image (tanpa toolchain Go di VPS):
+Ekspor JSON dari repo FE dulu (menulis satu berkas sesuai kontrak
+ARCHITECTURE §16.1), lalu jalankan binari `importer` yang ikut di dalam image
+(tanpa toolchain Go di VPS):
+
+```bash
+# di repo FE (butuh scripts/service-account.json project LAMA):
+npm run export:firestore -- --normalize   # preflight gagal (exit 1) = importer akan menolak
+```
+
+> Pakai `export-firestore.cjs` (dipanggil lewat `npm run export:firestore`).
+> `scripts/migrate-firestore.cjs` adalah alat lain: menyalin data antar-project
+> Firebase, **bukan** sumber impor ini.
 
 ```bash
 docker compose cp export.json api:/tmp/export.json

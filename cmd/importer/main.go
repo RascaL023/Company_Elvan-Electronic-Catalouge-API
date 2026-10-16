@@ -9,8 +9,11 @@
 //	importer verify
 //
 // Sumber JSON adalah hasil ekspor koleksi products/categories/brands dari
-// scripts/migrate-firestore.cjs (repo FE); dokumen catalog/snapshot dilewati
-// karena hanya proyeksi (sumber kebenaran tetap products/*).
+// `npm run export:firestore` (scripts/export-firestore.cjs, repo FE) yang
+// menulis satu berkas sesuai kontrak ARCHITECTURE §16.1. Skrip lain di repo FE
+// (migrate-firestore.cjs) menyalin data antar-project Firebase, bukan untuk
+// importer ini. Dokumen catalog/snapshot dilewati karena hanya proyeksi
+// (sumber kebenaran tetap products/*).
 package main
 
 import (
