@@ -1,12 +1,17 @@
 # Caddyfile — satu domain: FE statis + API (ARCHITECTURE §15).
 #
 # Env diisi oleh compose.yaml:
-#   SITE_ADDRESS  alamat listen, mis. ":80" (Caddy auto-HTTPS saat :443 publik)
+#   SITE_ADDRESS  domain yang dilayani (mis. "katalog.example.com"). TLS
+#                 otomatis hanya aktif kalau ada hostname di sini; ":80" untuk
+#                 uji lokal tanpa TLS.
 #   SITE_EMAIL    email untuk sertifikat TLS (ACME)
 #   API_ORIGIN    upstream API, mis. "api:8080"
 #
 # Catatan: /healthz & /readyz ikut di-proxy supaya uptime check menembus API.
-
+#
+# Jangan menambahkan trusted_proxies selama Caddy adalah server terdepan:
+# default-nya (mengabaikan X-Forwarded-For kiriman klien) justru yang kita
+# andalkan, karena rate limit login API memakai entri pertama header itu.
 {
 	email {$SITE_EMAIL}
 }
@@ -30,11 +35,36 @@
 		file_server
 	}
 
+	# Aset ber-hash dari Vite (`index-UJzQCY3b.js`) aman di-cache lama karena
+	# namanya berubah setiap build. Kurung kurawal perlu dikutip di Caddyfile.
+	@hashed path_regexp hashed "-[0-9A-Za-z_-]{8}\.(js|css|woff2?)$"
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	# Selain API dan aset ber-hash: dokumen HTML — termasuk rute SPA
+	# (`/product/<id>`) yang di-fallback ke index.html — dan aset publik tanpa
+	# hash (mis. `/assets/images/company_logo.png`). Semuanya harus direvalidasi
+	# supaya build baru tidak tertahan di cache klien.
+	@document {
+		not path /api/* /healthz /readyz
+		not path_regexp hashed "-[0-9A-Za-z_-]{8}\.(js|css|woff2?)$"
+	}
+	header @document Cache-Control "no-cache"
+
 	# Header dasar keamanan + kompresi.
 	header {
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		# HSTS hanya berlaku di atas HTTPS (di HTTP browser mengabaikannya).
+		# Sengaja tanpa includeSubDomains/preload sampai semua subdomain siap.
+		Strict-Transport-Security "max-age=31536000"
+		# CSP masih report-only: pelanggaran hanya dilaporkan di console
+		# browser, tidak memblokir apa pun. Setelah laporan bersih, ganti jadi
+		# "Content-Security-Policy" (tanpa akhiran -Report-Only).
+		# img-src/connect-src memuat origin ImageKit: gambar tampil dari URL
+		# endpoint (ik.imagekit.io) dan upload langsung dari browser ke
+		# upload.imagekit.io. Sesuaikan kalau memakai CNAME kustom.
+		Content-Security-Policy-Report-Only "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: https://ik.imagekit.io; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' https://upload.imagekit.io"
 		-Server
 	}
 	encode gzip
