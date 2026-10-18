@@ -4,7 +4,7 @@ Topologi satu VPS (ARCHITECTURE §15):
 
 ```
 Internet ──▶ Caddy (TLS otomatis)
-               ├── /          → file statis FE  (./site)
+               ├── /          → web (:80, nginx + dist FE)
                ├── /api/*     → Go API (:8080) ──▶ PostgreSQL 18
                └── /healthz   → Go API
 ```
@@ -126,18 +126,29 @@ Isi image: hasil `pnpm build` + nginx. TLS, header keamanan, gzip, dan rute
 
 ```bash
 cd <repo FE>
-docker build -f deploy/Dockerfile -t elvan-web:dev .
+docker build -f deploy/Dockerfile \
+  --build-arg VITE_IMAGEKIT_URL_ENDPOINT=https://ik.imagekit.io/<imagekit-id> \
+  --build-arg VITE_IMAGEKIT_PUBLIC_KEY=public_<imagekit-id> \
+  -t elvan-web:dev .
 ```
 
 `VITE_API_BASE_URL` sudah default `/api/v1` di Dockerfile (relatif: satu origin
-lewat Caddy), jadi tidak perlu dioper. Di `deploy/.env`, `WEB_IMAGE=elvan-web:dev`
-(default), lalu `docker compose up -d web`.
+lewat Caddy), jadi tidak perlu dioper. Dua arg ImageKit **wajib**: `.env` repo FE
+tidak ikut ke build context, jadi tanpa endpoint gambar provider jatuh ke `local`
+dan semua gambar produk di-resolve ke `/assets/...` (404). Dockerfile menolak
+build kalau `VITE_STORAGE_PROVIDER=imagekit` sementara endpoint kosong.
+
+Di `deploy/.env`, `WEB_IMAGE=elvan-web:dev` (default), lalu
+`docker compose up -d web`.
 
 ### 7.2 Dari registry (alur VPS)
 
 ```bash
 cd <repo FE>
-docker build -f deploy/Dockerfile -t ghcr.io/<owner>/elvan-web:1.4.0 .
+docker build -f deploy/Dockerfile \
+  --build-arg VITE_IMAGEKIT_URL_ENDPOINT=https://ik.imagekit.io/<imagekit-id> \
+  --build-arg VITE_IMAGEKIT_PUBLIC_KEY=public_<imagekit-id> \
+  -t ghcr.io/<owner>/elvan-web:1.4.0 .
 docker push ghcr.io/<owner>/elvan-web:1.4.0
 ```
 
