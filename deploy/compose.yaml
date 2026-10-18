@@ -1,16 +1,22 @@
 # compose.yaml — topologi produksi satu VPS (ARCHITECTURE §15).
 #
 #   Internet ──▶ caddy (TLS otomatis)
-#                  ├── /         → file statis FE
-#                  └── /api/*    → api (:8080) ──▶ postgres:18
+#                  ├── /         → web (:80, nginx + dist FE)
+#                  ├── /api/*    → api (:8080) ──▶ postgres:18
+#                  └── /healthz  → api
+#
+# FE dan API adalah DUA image terpisah dari DUA repo (multi-repo):
+#   elvan-api  dibangun dari repo ini      (deploy/Dockerfile, target api)
+#   elvan-web  dibangun dari repo FE       (deploy/Dockerfile di repo FE)
+# VPS tidak pernah install Node/pnpm/Go — cukup `docker compose pull`.
 #
 # Migrasi adalah langkah TERPISAH sebelum API naik (bukan saat startup):
 #
 #   docker compose up -d postgres
 #   docker compose run --rm migrate        # goose up
-#   docker compose up -d api caddy
+#   docker compose up -d api web caddy
 #
-# Image dibangun dari root repo:
+# Image API dibangun dari root repo ini:
 #   docker compose build
 # atau:
 #   docker build -f deploy/Dockerfile -t elvan-api:dev .
@@ -79,11 +85,26 @@ services:
     expose:
       - "8080"
 
+  # Situs statis FE. Image dibangun dari repo FE (deploy/Dockerfile) atau
+  # di-pull dari registry; compose hanya menunjuk tag-nya lewat WEB_IMAGE.
+  # Tanpa `build:` dan tanpa port host: hanya Caddy yang bisa menjangkaunya.
+  web:
+    image: ${WEB_IMAGE:-elvan-web:dev}
+    restart: unless-stopped
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
     depends_on:
       - api
+      - web
     ports:
       - "80:80"
       - "443:443"
@@ -91,10 +112,9 @@ services:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
       SITE_EMAIL: ${SITE_EMAIL:-}
       API_ORIGIN: api:8080
+      WEB_ORIGIN: web:80
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Build output FE (hasil `npm run build` di repo FE) disalin ke sini.
-      - ./site:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
 

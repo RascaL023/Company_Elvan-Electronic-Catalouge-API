@@ -12,8 +12,8 @@ Internet ──▶ Caddy (TLS otomatis)
 | Berkas | Peran |
 |---|---|
 | `Dockerfile` | multi-stage: target `api` (distroless non-root) dan `migrate` (goose) |
-| `compose.yaml` | `postgres:18`, `migrate`, `api`, `caddy` |
-| `Caddyfile` | rute `/` (FE statis) dan `/api/*` (proxy ke API) |
+| `compose.yaml` | `postgres:18`, `migrate`, `api`, `web`, `caddy` |
+| `Caddyfile` | rute `/` (proxy ke `web`) dan `/api/*` (proxy ke API) |
 | `.env.example` | template konfigurasi → salin ke `.env` |
 | `backup.sh` | `pg_dump` terjadwal (lewat container `postgres`) + rotasi + uji restore |
 
@@ -22,8 +22,11 @@ Internet ──▶ Caddy (TLS otomatis)
 ```bash
 cd deploy
 cp .env.example .env        # isi POSTGRES_PASSWORD, SITE_ADDRESS (domain asli), SITE_EMAIL
-mkdir -p site               # build FE produksi disalin ke sini (lihat §7)
 ```
+
+VPS hanya butuh Docker + Compose. Tidak ada Node/pnpm/Go, dan tidak ada
+`./site` yang disalin manual: situs FE adalah **image** `elvan-web` (dibangun
+dari repo FE, lihat §7) yang ditunjuk `WEB_IMAGE` di `.env`.
 
 Tiga env yang paling gampang salah:
 
@@ -58,9 +61,14 @@ memuat mekanisme migrasi apa pun (ARCHITECTURE §15).
 ## 4. Naikkan API + situs
 
 ```bash
-docker compose up -d api caddy
+docker compose up -d api web caddy
 curl -fsS https://<domain>/healthz    # -> ok  (mode uji :80: http://localhost/healthz)
 ```
+
+`web` tidak mempublikasikan port ke host (`expose: 80` saja); satu-satunya
+container yang membuka 80/443 adalah `caddy`. Kalau `web` belum punya image,
+compose gagal dengan `pull access denied` — bangun dulu (§7.1) atau tarik
+dari registry (§7.2).
 
 ## 5. Impor data Firestore
 
@@ -70,10 +78,10 @@ ARCHITECTURE §16.1), lalu jalankan binari `importer` yang ikut di dalam image
 
 ```bash
 # di repo FE (butuh scripts/service-account.json project LAMA):
-npm run export:firestore -- --normalize   # preflight gagal (exit 1) = importer akan menolak
+pnpm export:firestore -- --normalize   # preflight gagal (exit 1) = importer akan menolak
 ```
 
-> Pakai `export-firestore.cjs` (dipanggil lewat `npm run export:firestore`).
+> Pakai `export-firestore.cjs` (dipanggil lewat `pnpm export:firestore`).
 > `scripts/migrate-firestore.cjs` adalah alat lain: menyalin data antar-project
 > Firebase, **bukan** sumber impor ini.
 
@@ -108,26 +116,52 @@ docker compose run --rm --no-deps --entrypoint /usr/local/bin/adminctl api \
 
 > Hash password Firebase tidak dipakai; buat/reset admin lewat `adminctl`.
 
-## 7. Cutover
+## 7. Situs FE (image terpisah)
 
-### 7.1 Build FE untuk cutover
+FE dikirim sebagai image sendiri (`elvan-web`), bukan salinan `dist/` ke VPS.
+Isi image: hasil `pnpm build` + nginx. TLS, header keamanan, gzip, dan rute
+`/api/*` tetap milik Caddy, jadi hanya `caddy` yang membuka port host.
+
+### 7.1 Bangun image FE (uji lokal / sebelum ada registry)
 
 ```bash
 cd <repo FE>
-VITE_API_BASE_URL=/api/v1 npm run build            # relatif: satu origin lewat Caddy
-rsync -a --delete dist/ vps:/opt/elvan/deploy/site/
+docker build -f deploy/Dockerfile -t elvan-web:dev .
 ```
 
-- `VITE_API_BASE_URL=/api/v1` cukup: `src/config/api.ts` otomatis memilih
-  adapter API untuk data, auth, dan media (Fase 3 sudah selesai — tidak ada
-  switch manual di composition root).
-- Jangan set `VITE_AUTH_BACKEND` / `VITE_MEDIA_BACKEND` ke `firebase`, dan
-  jangan tinggalkan `VITE_API_BASE_URL` kosong: build tanpa itu akan kembali
-  memakai Firebase (dan Worker untuk upload).
-- `./site` di-mount read-only ke Caddy, jadi berkas yang disalin langsung
-  terbaca tanpa restart.
+`VITE_API_BASE_URL` sudah default `/api/v1` di Dockerfile (relatif: satu origin
+lewat Caddy), jadi tidak perlu dioper. Di `deploy/.env`, `WEB_IMAGE=elvan-web:dev`
+(default), lalu `docker compose up -d web`.
 
-### 7.2 Urutan cutover
+### 7.2 Dari registry (alur VPS)
+
+```bash
+cd <repo FE>
+docker build -f deploy/Dockerfile -t ghcr.io/<owner>/elvan-web:1.4.0 .
+docker push ghcr.io/<owner>/elvan-web:1.4.0
+```
+
+Di VPS, `deploy/.env` berisi `WEB_IMAGE=ghcr.io/<owner>/elvan-web:1.4.0`, lalu:
+
+```bash
+docker compose pull web
+docker compose up -d web
+```
+
+Tag adalah mekanisme rollback: kembali ke tag sebelumnya, `pull`, `up -d`.
+Tidak ada `rsync` dan tidak ada build di VPS.
+
+- `VITE_*` dibekukan saat build (Vite meng-inline nilainya). Mengganti backend
+  berarti build image baru, **bukan** mengubah env container.
+- `VITE_API_BASE_URL=/api/v1` cukup: `src/config/api.ts` otomatis memilih
+  adapter API untuk data, auth, dan media (Fase 3 sudah selesai).
+- Jangan set `VITE_AUTH_BACKEND` / `VITE_MEDIA_BACKEND` ke `firebase`, dan
+  jangan biarkan `VITE_API_BASE_URL` kosong: build akan kembali ke Firebase
+  (dan Worker untuk upload).
+- Fallback SPA (`/product/<id>`) ditangani nginx; Caddy menambahkan
+  Cache-Control, CSP, dan gzip di atasnya.
+
+### 7.3 Urutan cutover
 
 1. Pastikan `importer verify` cocok dengan jumlah dokumen Firestore.
 2. Bandingkan `GET /api/v1/catalog` dengan snapshot Firestore (sampel produk).
@@ -173,12 +207,14 @@ Salin `BACKUP_DIR` ke luar VPS dengan rsync/rclone — backup lokal bukan backup
 
 ```bash
 docker compose build
-docker compose up -d api
+docker compose up -d api web
 # rollback ke tag sebelumnya:
-docker compose pull && docker compose up -d api   # bila memakai registry
+docker compose pull && docker compose up -d api web   # bila memakai registry
 ```
 
-Tag versi disarankan (`elvan-api:1.4.0`); rollback = kembali ke tag sebelumnya.
+Tag versi disarankan (`elvan-api:1.4.0`, `elvan-web:1.4.0`); rollback = kembali
+ke tag sebelumnya. `api` dan `web` dirilis terpisah karena berasal dari dua
+repo — `WEB_IMAGE` bisa dinaikkan tanpa menyentuh API, dan sebaliknya.
 
 ## 10. Observabilitas
 

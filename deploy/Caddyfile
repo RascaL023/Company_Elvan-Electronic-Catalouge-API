@@ -1,4 +1,4 @@
-# Caddyfile — satu domain: FE statis + API (ARCHITECTURE §15).
+# Caddyfile — satu domain: FE + API (ARCHITECTURE §15).
 #
 # Env diisi oleh compose.yaml:
 #   SITE_ADDRESS  domain yang dilayani (mis. "katalog.example.com"). TLS
@@ -6,6 +6,7 @@
 #                 uji lokal tanpa TLS.
 #   SITE_EMAIL    email untuk sertifikat TLS (ACME)
 #   API_ORIGIN    upstream API, mis. "api:8080"
+#   WEB_ORIGIN    upstream situs statis, mis. "web:80" (image nginx dari repo FE)
 #
 # Catatan: /healthz & /readyz ikut di-proxy supaya uptime check menembus API.
 #
@@ -28,11 +29,11 @@
 		reverse_proxy {$API_ORIGIN}
 	}
 
-	# Sisanya = build statis FE (hasil `npm run build` di repo FE).
+	# Sisanya = situs statis FE (image `elvan-web` dari repo FE). Fallback
+	# SPA (/product/<id>) ditangani nginx di container itu; Caddy hanya
+	# meneruskan, lalu menambahkan header di bawah.
 	handle {
-		root * /srv
-		try_files {path} /index.html
-		file_server
+		reverse_proxy {$WEB_ORIGIN}
 	}
 
 	# Aset ber-hash dari Vite (`index-UJzQCY3b.js`) aman di-cache lama karena

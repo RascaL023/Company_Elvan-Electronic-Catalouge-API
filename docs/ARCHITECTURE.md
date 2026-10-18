@@ -176,7 +176,7 @@ elvan-catalog-api/
 │
 ├── deploy/
 │   ├── Dockerfile
-│   ├── compose.yaml            # api + postgres (+ caddy)
+│   ├── compose.yaml            # postgres + api + web + caddy
 │   └── Caddyfile
 │
 ├── docs/
@@ -654,12 +654,15 @@ Pipeline CI minimum: `go vet` → `golangci-lint` → `go test ./...` (termasuk 
 Topologi satu VPS:
 
 ```
-Internet ──▶ Caddy (TLS otomatis)
-               ├── /          → file statis FE
-               └── /api/*     → Go API (:8080) ──▶ PostgreSQL 18
+Internet ──▶ Caddy (TLS otomatis, satu-satunya port host)
+               ├── /          → web (:80, nginx + hasil build FE)
+               ├── /api/*     → Go API (:8080) ──▶ PostgreSQL 18
+               └── /healthz   → Go API
 ```
 
-- **Container:** Dockerfile multi-stage (build → image minimal non-root). `compose.yaml` berisi `api`, `postgres:18`, dan `caddy`.
+- **Container:** Dockerfile multi-stage (build → image minimal non-root). `compose.yaml` berisi `postgres:18`, `migrate`, `api`, `web`, dan `caddy`.
+- **Dua repo, dua image:** `elvan-api` dibangun dari repo ini, `elvan-web` dari repo FE (`deploy/Dockerfile` di sana). `compose.yaml` hanya menunjuk tag lewat `WEB_IMAGE`; tidak ada `build:` lintas repo, jadi VPS cukup `docker compose pull`. Tidak ada Node/pnpm/Go di host.
+- **Situs FE:** image nginx berisi `dist/` (fallback SPA ditangani nginx). TLS, CSP, gzip, Cache-Control, dan rute `/api/*` tetap milik Caddy, sehingga container `web` tidak mengekspos port ke host.
 - **Migration:** dijalankan sebagai langkah terpisah sebelum API naik (`goose up`), bukan otomatis saat startup.
 - **Backup:** `pg_dump` terjadwal ke lokasi di luar VPS, dan uji restore berkala.
 - **Rilis:** build image bertag versi → `compose pull && up -d`; rollback dengan tag sebelumnya.
@@ -669,7 +672,7 @@ Internet ──▶ Caddy (TLS otomatis)
 
 ## 16. Migrasi dari Firebase
 
-1. **Ekspor Firestore** ke JSON dengan skrip di repo FE: `npm run export:firestore`
+1. **Ekspor Firestore** ke JSON dengan skrip di repo FE: `pnpm export:firestore`
    (`scripts/export-firestore.cjs`, format §16.1 + preflight). *Bukan*
    `migrate-firestore.cjs` — skrip itu menyalin data antar-project Firebase.
 2. **`cmd/importer`** membaca JSON dan memasukkan ke Postgres dalam satu transaksi:
