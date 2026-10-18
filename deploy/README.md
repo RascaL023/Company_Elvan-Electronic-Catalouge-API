@@ -16,6 +16,8 @@ Internet ──▶ Caddy (TLS otomatis)
 | `Caddyfile` | rute `/` (proxy ke `web`) dan `/api/*` (proxy ke API) |
 | `.env.example` | template konfigurasi → salin ke `.env` |
 | `backup.sh` | `pg_dump` terjadwal (lewat container `postgres`) + rotasi + uji restore |
+| `.github/workflows/ci.yml` | verify + `publish`: image `elvan-api`/`elvan-api-migrate` ke GHCR (hanya `main`) |
+| `.github/workflows/deploy.yml` | deploy API bergerbang (manual + persetujuan environment `production`) |
 
 ## 1. Persiapan
 
@@ -26,7 +28,19 @@ cp .env.example .env        # isi POSTGRES_PASSWORD, SITE_ADDRESS (domain asli),
 
 VPS hanya butuh Docker + Compose. Tidak ada Node/pnpm/Go, dan tidak ada
 `./site` yang disalin manual: situs FE adalah **image** `elvan-web` (dibangun
-dari repo FE, lihat §7) yang ditunjuk `WEB_IMAGE` di `.env`.
+dari repo FE, lihat §7) yang ditunjuk `WEB_IMAGE` di `.env`; API adalah image
+`elvan-api`/`elvan-api-migrate` dari GHCR yang ditunjuk `API_IMAGE`/
+`MIGRATE_IMAGE`.
+
+Direktori `VPS_DEPLOY_DIR` (boleh di path mana pun) minimal berisi
+`compose.yaml`, `Caddyfile`, `.env`, dan `backup.sh` — `backup.sh` wajib ada
+karena deploy API menolak jalan tanpa backup sebelum migrasi.
+
+Kalau package GHCR-nya **private**, login sekali di VPS sebagai user deploy:
+
+```bash
+docker login ghcr.io     # username: <owner>, password: PAT dengan read:packages
+```
 
 Tiga env yang paling gampang salah:
 
@@ -42,11 +56,20 @@ Tiga env yang paling gampang salah:
   (Safari tidak; untuk Safari ubah `APP_ENV` di `compose.yaml` menjadi
   `development` **dan** `COOKIE_SECURE=false`).
 
-## 2. Build image
+## 2. Image API (lokal vs VPS)
+
+Di VPS **tidak ada build**. Image `elvan-api` dan `elvan-api-migrate` dibuat
+oleh `job publish` di `.github/workflows/ci.yml` (hanya setelah `verify` hijau
+dan hanya dari `main`), lalu ditarik dari GHCR. Build lokal hanya untuk
+pengembangan:
 
 ```bash
-docker compose build        # atau: docker build -f deploy/Dockerfile -t elvan-api:dev ..
+docker compose build        # menandai image sesuai API_IMAGE/MIGRATE_IMAGE di .env
+# atau: docker build -f deploy/Dockerfile --target api -t elvan-api:dev ..
 ```
+
+Di VPS, semua perintah compose memakai `--no-build`: build context (`..`)
+boleh saja tidak ada karena image selalu datang dari registry.
 
 ## 3. Migrasi (langkah TERPISAH — bukan saat startup API)
 
@@ -56,12 +79,14 @@ docker compose run --rm migrate      # goose up (target `migrate`)
 ```
 
 Migrasi selalu dijalankan eksplisit sebelum API naik; binari `api` tidak
-memuat mekanisme migrasi apa pun (ARCHITECTURE §15).
+memuat mekanisme migrasi apa pun (ARCHITECTURE §15). Di VPS, langkah ini
+dijalankan otomatis oleh `deploy.yml` **setelah** backup — dan kalau migrasi
+gagal, `api` tidak disentuh.
 
 ## 4. Naikkan API + situs
 
 ```bash
-docker compose up -d api web caddy
+docker compose up -d --no-build api web caddy
 curl -fsS https://<domain>/healthz    # -> ok  (mode uji :80: http://localhost/healthz)
 ```
 
@@ -216,16 +241,42 @@ Salin `BACKUP_DIR` ke luar VPS dengan rsync/rclone — backup lokal bukan backup
 
 ## 9. Rilis & rollback
 
+Dua repo, dua pipeline, dua tingkat gerbang — karena hanya BE yang memegang
+data.
+
+| | Repo FE | Repo BE |
+|---|---|---|
+| Tiap push `main` | build + push `elvan-web`, **langsung deploy** | test + push `elvan-api`/`-migrate` (produksi tidak berubah) |
+| Menyentuh produksi | otomatis | `workflow_dispatch` + **Approve** |
+| Ditulis ke `.env` | `WEB_IMAGE` | `API_IMAGE`, `MIGRATE_IMAGE` |
+| Langkah wajib | health check `web` | backup → migrate → `api` → `/healthz` |
+| Rollback | tukar tag `WEB_IMAGE` | tukar tag `API_IMAGE` (migrasi tidak ikut batal) |
+
+Aktifkan gerbang sekali di repo BE: **Settings → Environments → production**,
+tambah *Required reviewers* dan *Deployment branches: main*. Tanpa itu
+workflow tetap jalan, tetapi tanpa persetujuan.
+
+Urutan rilis: **BE dulu, FE belakangan**. Kontrak API dijaga *additive*
+(tambah endpoint/field, jangan hapus/rename dalam satu rilis) supaya FE yang
+deploy otomatis tidak menabrak API lama. Untuk perubahan yang memutus
+kompatibilitas, deploy BE bergerbang lebih dulu, baru merge PR FE.
+
+Deploy FE dan BE menulis `.env` yang sama, jadi keduanya memakai `flock` di
+`/tmp/elvan-deploy.lock` pada VPS: deploy kedua antre (maks 10 menit), bukan
+saling menimpa.
+
+Deploy manual (kalau perlu, tanpa GitHub):
+
 ```bash
-docker compose build
-docker compose up -d api web
-# rollback ke tag sebelumnya:
-docker compose pull && docker compose up -d api web   # bila memakai registry
+docker compose pull api migrate
+BACKUP_DIR=./backups sh ./backup.sh
+docker compose run --rm --no-build migrate
+docker compose up -d --no-build api
 ```
 
-Tag versi disarankan (`elvan-api:1.4.0`, `elvan-web:1.4.0`); rollback = kembali
-ke tag sebelumnya. `api` dan `web` dirilis terpisah karena berasal dari dua
-repo — `WEB_IMAGE` bisa dinaikkan tanpa menyentuh API, dan sebaliknya.
+Rollback = tulis tag `sha-` sebelumnya ke `API_IMAGE`/`MIGRATE_IMAGE`, lalu
+`pull` + `up -d --no-build api`. Migrasi yang sudah jalan tidak dibatalkan oleh
+rollback; pulihkan dari dump di `BACKUP_DIR` bila perlu (§8).
 
 ## 10. Observabilitas
 

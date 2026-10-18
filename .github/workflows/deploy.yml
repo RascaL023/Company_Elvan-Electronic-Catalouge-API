@@ -1,0 +1,224 @@
+# Deploy API ke VPS — BERGerbang, bukan otomatis.
+#
+# Beda dengan deploy FE (otomatis tiap `main`) karena rilis BE bisa menjalankan
+# migrasi skema yang TIDAK bisa dibatalkan dengan menukar tag image. Karena itu
+# deploy hanya berjalan saat diminta (workflow_dispatch) dan menunggu
+# persetujuan environment `production`.
+#
+# Alur lengkap:
+#   ci.yml (verify) → job publish → ghcr.io/<owner>/elvan-api:sha-<commit>
+#                                   ghcr.io/<owner>/elvan-api-migrate:sha-<commit>
+#   → workflow ini (pilih tag) → approve → backup → migrate → api → /healthz
+#
+# Yang perlu disiapkan di repo ini (Settings → Secrets and variables → Actions):
+#
+#   Variables:
+#     VPS_HOST        hostname/IP tailnet VPS (mis. elvan-vps)
+#     VPS_USER        user SSH di VPS (mis. deploy)
+#     VPS_DEPLOY_DIR  direktori berisi compose.yaml, Caddyfile, .env, backup.sh
+#     SITE_URL        URL publik (mis. https://katalog.example.com)
+#     BACKUP_DIR      opsional; default <VPS_DEPLOY_DIR>/backups
+#
+#   Secrets:
+#     TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET  OAuth client Tailscale (tag:ci)
+#     VPS_SSH_KEY                           private key SSH untuk VPS_USER
+#
+#   Environment `production` (Settings → Environments): pasang
+#   **Required reviewers** dan **Deployment branches: main**. Tanpa itu,
+#   workflow tetap jalan tetapi tidak ada gerbang persetujuan.
+#
+# Rollback otomatis mengembalikan .env ke salinan sebelum deploy (jadi
+# API_IMAGE/MIGRATE_IMAGE kembali ke nilai lama) lalu menaikkan lagi container
+# api. Migrasi yang sudah jalan TIDAK dibatalkan — kalau perlu, restore dari
+# dump di BACKUP_DIR (lihat deploy/README.md §8).
+
+name: Deploy API
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag image di GHCR (sha-<commit> dari run publish, atau latest)'
+        required: true
+        default: latest
+
+# Satu deploy API pada satu waktu. Deploy FE memakai kunci yang sama di VPS
+# (flock), jadi keduanya antre alih-alih saling menimpa .env.
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Gerbang persetujuan: review dulu, baru menyentuh produksi.
+    environment: production
+    env:
+      IMAGE_TAG: ${{ inputs.tag }}
+      VPS_HOST: ${{ vars.VPS_HOST }}
+      VPS_USER: ${{ vars.VPS_USER }}
+      VPS_DEPLOY_DIR: ${{ vars.VPS_DEPLOY_DIR }}
+      BACKUP_DIR: ${{ vars.BACKUP_DIR }}
+      SITE_URL: ${{ vars.SITE_URL }}
+    steps:
+      - name: Sambung ke tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: ${{ vars.VPS_HOST }}
+
+      - name: Siapkan kunci SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -lf ~/.ssh/id_ed25519   # fingerprint saja, bukan isi kunci
+
+      - name: Deploy di VPS
+        run: |
+          set -euo pipefail
+          : "${VPS_HOST:?repo variable VPS_HOST belum diisi}"
+          : "${VPS_USER:?repo variable VPS_USER belum diisi}"
+          : "${SITE_URL:?repo variable SITE_URL belum diisi}"
+          : "${IMAGE_TAG:?input tag kosong}"
+          deploy_dir="${VPS_DEPLOY_DIR:-/opt/elvan/deploy}"
+
+          # Hanya dua bentuk tag yang dikenal, supaya salah ketik tidak
+          # menghasilkan "image not found" yang membingungkan.
+          if ! [[ "$IMAGE_TAG" =~ ^(latest|sha-[0-9a-f]{7,40})$ ]]; then
+            echo "tag tidak valid: $IMAGE_TAG (pakai latest atau sha-<commit>)"
+            exit 1
+          fi
+
+          owner="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          api_image="ghcr.io/$owner/elvan-api:$IMAGE_TAG"
+          migrate_image="ghcr.io/$owner/elvan-api-migrate:$IMAGE_TAG"
+
+          ssh -i ~/.ssh/id_ed25519 \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 \
+              -o BatchMode=yes \
+              "${VPS_USER}@${VPS_HOST}" \
+              bash -s -- "$api_image" "$migrate_image" "$deploy_dir" "${BACKUP_DIR:-}" <<'REMOTE'
+          set -euo pipefail
+          api_image="$1"
+          migrate_image="$2"
+          dir="$3"
+          backup_dir="${4:-}"
+
+          if [ ! -d "$dir" ]; then
+            echo "direktori deploy tidak ada di VPS: $dir"
+            exit 1
+          fi
+          cd "$dir"
+
+          if [ ! -f compose.yaml ]; then
+            echo "compose.yaml tidak ditemukan di $dir"
+            exit 1
+          fi
+          if [ ! -f .env ]; then
+            echo ".env tidak ditemukan di $dir — buat dulu: cp .env.example .env"
+            exit 1
+          fi
+          if [ ! -f ./backup.sh ]; then
+            echo "backup.sh tidak ditemukan di $dir — deploy menolak jalan tanpa backup sebelum migrasi"
+            exit 1
+          fi
+
+          # Deploy FE menulis .env yang sama. Kunci ini membuat keduanya antre
+          # (maks 10 menit), bukan saling menimpa sed -i / up -d.
+          exec 9>/tmp/elvan-deploy.lock
+          flock -w 600 9 || { echo "deploy lain masih berjalan (>10 menit)"; exit 1; }
+
+          previous_api="$(grep -E '^API_IMAGE=' .env | cut -d= -f2- || true)"
+          [ -n "$backup_dir" ] || backup_dir="$dir/backups"
+
+          # Salinan .env sebelum diubah: rollback cukup mengembalikan berkas ini
+          # (termasuk untuk deploy pertama yang belum punya API_IMAGE).
+          env_backup=".env.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+          cp .env "$env_backup"
+          ls -1t .env.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f
+
+          set_env() {
+            key="$1"
+            value="$2"
+            if grep -q "^$key=" .env; then
+              sed -i "s|^$key=.*|$key=$value|" .env
+            else
+              printf '\n%s=%s\n' "$key" "$value" >> .env
+            fi
+          }
+
+          rollback() {
+            echo "rollback: kembalikan .env dari $env_backup"
+            cp "$env_backup" .env
+            docker compose pull api || true
+            docker compose up -d --no-build api || true
+          }
+
+          echo "== backup sebelum migrasi (BACKUP_DIR=$backup_dir)"
+          BACKUP_DIR="$backup_dir" sh ./backup.sh
+
+          echo "== tarik image (sebelumnya: ${previous_api:-<belum ada>})"
+          # Pull lewat referensi eksplisit: .env belum diubah, jadi kegagalan di
+          # sini tidak meninggalkan konfigurasi produksi setengah jadi.
+          docker pull "$api_image"
+          docker pull "$migrate_image"
+
+          echo "== migrasi"
+          # Override environment menang atas .env: migrasi memakai image baru
+          # tanpa mengubah konfigurasi lebih dulu. Gagal di sini = api lama
+          # tetap jalan, .env tetap seperti sebelumnya.
+          MIGRATE_IMAGE="$migrate_image" docker compose run --rm --no-build migrate
+
+          echo "== naikkan api"
+          set_env API_IMAGE "$api_image"
+          set_env MIGRATE_IMAGE "$migrate_image"
+          docker compose up -d --no-build api
+
+          # Probe HTTP lewat Caddy (busybox wget di image caddy:2-alpine). Kalau
+          # wget tidak ada, fallback ke cek port dari host supaya deploy tidak
+          # gagal hanya karena tool di dalam container.
+          probe() {
+            if docker compose exec -T caddy sh -c 'command -v wget >/dev/null 2>&1'; then
+              docker compose exec -T caddy wget -qO- http://api:8080/healthz >/dev/null 2>&1
+              return $?
+            fi
+            ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+              "$(docker compose ps -q api)" 2>/dev/null || true)"
+            [ -n "$ip" ] || return 1
+            (exec 3<>"/dev/tcp/$ip/8080") 2>/dev/null
+          }
+
+          health=""
+          for _ in $(seq 1 30); do
+            if probe; then
+              health="ok"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$health" != "ok" ]; then
+            echo "api tidak sehat setelah 60 detik"
+            docker compose logs --tail 100 api || true
+            rollback
+            exit 1
+          fi
+
+          echo "api sehat: $api_image"
+          REMOTE
+
+      # Dicek dari runner lewat jalur publik yang dipakai pengunjung
+      # (Caddy -> api), bukan hanya dari dalam VPS.
+      - name: Uji /healthz publik
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 10 --retry-delay 5 --retry-connrefused "$SITE_URL/healthz"
+          echo "situs merespons: $SITE_URL/healthz"

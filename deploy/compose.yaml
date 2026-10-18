@@ -44,6 +44,10 @@ services:
   # Langkah migrasi terpisah (goose up). Tidak restart otomatis; jalankan
   # eksplisit sebelum api, sesuai ARCHITECTURE §15.
   migrate:
+    # Dua cara pakai: `build` untuk lokal (`--build`), `image` untuk VPS
+    # (`pull` dari GHCR, dipakai dengan `--no-build`). `image` diisi
+    # MIGRATE_IMAGE oleh .github/workflows/deploy.yml.
+    image: ${MIGRATE_IMAGE:-elvan-api-migrate:dev}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -56,6 +60,8 @@ services:
       GOOSE_DBSTRING: "host=postgres port=5432 user=${POSTGRES_USER:-elvan} password=${POSTGRES_PASSWORD} dbname=${POSTGRES_DB:-elvan_catalog} sslmode=disable"
 
   api:
+    # Lihat catatan di `migrate`: image untuk VPS, build untuk lokal.
+    image: ${API_IMAGE:-elvan-api:dev}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
