@@ -256,6 +256,23 @@ Aktifkan gerbang sekali di repo BE: **Settings → Environments → production**
 tambah *Required reviewers* dan *Deployment branches: main*. Tanpa itu
 workflow tetap jalan, tetapi tanpa persetujuan.
 
+### 9.1 CD jalur uji (`deploy-test`)
+
+Push ke branch `deploy-test` menjalankan CI **dan** `deploy.yml` sekaligus,
+tanpa gerbang: job `publish` menaruh image `sha-<commit>`, lalu workflow deploy
+menariknya di VPS, memastikan `postgres` hidup, backup, `migrate`, lalu
+`up -d api web caddy`, dan terakhir menembak `$SITE_URL/healthz`.
+
+Karena keduanya berjalan paralel, langkah `docker pull` di VPS menunggu image
+muncul (maks ±10 menit). Kalau `verify` gagal, image tidak pernah dibuat dan
+deploy berakhir merah di langkah itu — bukan deploy setengah jalan.
+
+Sekali pasang: `.env` di `VPS_DEPLOY_DIR` sudah ada, paket GHCR `elvan-api` dan
+`elvan-api-migrate` bisa ditarik VPS (publik, atau `docker login ghcr.io` sekali
+sebagai user deploy), dan variabel `VPS_HOST`, `VPS_USER`, `VPS_DEPLOY_DIR`,
+`SITE_URL` sudah diisi. Environment `deploy-test` dibuat otomatis saat deploy
+pertama; jangan dipasangi required reviewer kalau ingin tetap otomatis.
+
 Urutan rilis: **BE dulu, FE belakangan**. Kontrak API dijaga *additive*
 (tambah endpoint/field, jangan hapus/rename dalam satu rilis) supaya FE yang
 deploy otomatis tidak menabrak API lama. Untuk perubahan yang memutus

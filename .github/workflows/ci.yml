@@ -77,13 +77,15 @@ jobs:
       - name: lint OpenAPI
         run: npx --yes @redocly/cli@2.64.0 lint api/openapi.yaml
 
-  # Artefak rilis. Dijalankan HANYA setelah `verify` hijau dan hanya dari
-  # `main` — PR dan `deploy-test` tidak mempublikasikan image. Job ini tidak
-  # menyentuh VPS; yang men-deploy adalah .github/workflows/deploy.yml
-  # (manual + persetujuan environment `production`).
+  # Artefak rilis. Dijalankan HANYA setelah `verify` hijau, dan hanya untuk
+  # push ke `main` atau `deploy-test` — PR tidak mempublikasikan image.
+  # `deploy-test` butuh image ini karena deploy.yml men-deploy otomatis dari
+  # branch itu (lihat CD di deploy.yml). Job ini sendiri tidak menyentuh VPS.
   publish:
     needs: verify
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/deploy-test')
     runs-on: ubuntu-latest
     permissions:
       contents: read

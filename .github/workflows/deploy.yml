@@ -1,14 +1,21 @@
-# Deploy API ke VPS — BERGerbang, bukan otomatis.
+# Deploy API ke VPS — dua jalur.
 #
-# Beda dengan deploy FE (otomatis tiap `main`) karena rilis BE bisa menjalankan
-# migrasi skema yang TIDAK bisa dibatalkan dengan menukar tag image. Karena itu
-# deploy hanya berjalan saat diminta (workflow_dispatch) dan menunggu
-# persetujuan environment `production`.
+#   1. CD jalur uji: push ke branch `deploy-test` → workflow ini jalan otomatis
+#      (tanpa gerbang) dengan image sha-<commit> hasil job `publish` di ci.yml.
+#      Environment `deploy-test` sengaja tanpa required reviewer.
+#   2. Produksi: workflow_dispatch + input tag → menunggu persetujuan
+#      environment `production`.
+#
+# Gerbang di jalur produksi ada karena rilis BE bisa menjalankan migrasi skema
+# yang TIDAK bisa dibatalkan dengan menukar tag image.
 #
 # Alur lengkap:
 #   ci.yml (verify) → job publish → ghcr.io/<owner>/elvan-api:sha-<commit>
 #                                   ghcr.io/<owner>/elvan-api-migrate:sha-<commit>
-#   → workflow ini (pilih tag) → approve → backup → migrate → api → /healthz
+#   → deploy-test: push memicu ci.yml dan workflow ini bersamaan, jadi langkah
+#     pull menunggu image muncul di registry (±10 menit)
+#   → (approve, hanya produksi) → pull → postgres → backup → migrate
+#   → api + web + caddy → /healthz
 #
 # Yang perlu disiapkan di repo ini (Settings → Secrets and variables → Actions):
 #
@@ -18,6 +25,9 @@
 #     VPS_DEPLOY_DIR  direktori berisi compose.yaml, Caddyfile, .env, backup.sh
 #     SITE_URL        URL publik (mis. https://katalog.example.com)
 #     BACKUP_DIR      opsional; default <VPS_DEPLOY_DIR>/backups
+#     VPS_VIA_TAILSCALE opsional; set "false" kalau VPS di-SSH langsung lewat
+#                     IP publik (langkah tailnet dilewati, TS_OAUTH_* tidak
+#                     diperlukan). Kosong = pakai tailnet.
 #
 #   Secrets:
 #     TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET  OAuth client Tailscale (tag:ci)
@@ -27,6 +37,9 @@
 #   **Required reviewers** dan **Deployment branches: main**. Tanpa itu,
 #   workflow tetap jalan tetapi tidak ada gerbang persetujuan.
 #
+#   Environment `deploy-test` tidak perlu disiapkan (dibuat otomatis saat
+#   dipakai). Jangan pasang required reviewer di sana kalau ingin CD otomatis.
+#
 # Rollback otomatis mengembalikan .env ke salinan sebelum deploy (jadi
 # API_IMAGE/MIGRATE_IMAGE kembali ke nilai lama) lalu menaikkan lagi container
 # api. Migrasi yang sudah jalan TIDAK dibatalkan — kalau perlu, restore dari
@@ -35,6 +48,10 @@
 name: Deploy API
 
 on:
+  # CD jalur uji: cukup `git push origin deploy-test`.
+  push:
+    branches: [deploy-test]
+
   workflow_dispatch:
     inputs:
       tag:
@@ -54,11 +71,15 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # Gerbang persetujuan: review dulu, baru menyentuh produksi.
-    environment: production
+    # Tunggu image dari job publish (±10 menit) + migrate + health check.
+    timeout-minutes: 25
+    # Hanya dispatch manual (produksi) yang lewat gerbang persetujuan.
+    # `deploy-test` sengaja tanpa required reviewer supaya CD-nya otomatis.
+    environment: ${{ github.ref == 'refs/heads/deploy-test' && 'deploy-test' || 'production' }}
     env:
-      IMAGE_TAG: ${{ inputs.tag }}
+      # Push: publish selalu menandai image sha-<commit> run yang sama.
+      # Dispatch: tag dipilih operator (default `latest`).
+      IMAGE_TAG: ${{ inputs.tag || format('sha-{0}', github.sha) }}
       VPS_HOST: ${{ vars.VPS_HOST }}
       VPS_USER: ${{ vars.VPS_USER }}
       VPS_DEPLOY_DIR: ${{ vars.VPS_DEPLOY_DIR }}
@@ -66,6 +87,9 @@ jobs:
       SITE_URL: ${{ vars.SITE_URL }}
     steps:
       - name: Sambung ke tailnet
+        # Default: VPS hanya terjangkau lewat tailnet. Kalau runner bisa SSH
+        # langsung ke VPS (IP publik), set VPS_VIA_TAILSCALE=false.
+        if: vars.VPS_VIA_TAILSCALE != 'false'
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -162,14 +186,43 @@ jobs:
             docker compose up -d --no-build api || true
           }
 
-          echo "== backup sebelum migrasi (BACKUP_DIR=$backup_dir)"
-          BACKUP_DIR="$backup_dir" sh ./backup.sh
-
           echo "== tarik image (sebelumnya: ${previous_api:-<belum ada>})"
           # Pull lewat referensi eksplisit: .env belum diubah, jadi kegagalan di
           # sini tidak meninggalkan konfigurasi produksi setengah jadi.
-          docker pull "$api_image"
-          docker pull "$migrate_image"
+          #
+          # Push ke `deploy-test` memicu ci.yml dan workflow ini bersamaan, jadi
+          # image bisa belum ada saat langkah ini jalan: coba ulang sampai
+          # ±10 menit sebelum menyerah.
+          pull_retry() {
+            tries="$1"
+            image="$2"
+            for _ in $(seq 1 "$tries"); do
+              if docker pull "$image"; then
+                return 0
+              fi
+              echo "belum tersedia di registry: $image (menunggu build CI)"
+              sleep 10
+            done
+            return 1
+          }
+          # verify + build CI biasanya 3-8 menit. Image migrate dibuat oleh
+          # job matrix yang sama, jadi setelah api muncul ia menyusul cepat;
+          # anggarannya lebih pendek supaya total tunggu tetap di bawah timeout.
+          pull_retry 60 "$api_image"
+          pull_retry 12 "$migrate_image"
+
+          # Backup butuh container postgres hidup: pg_dump/pg_restore/psql
+          # dijalankan DI DALAM container itu. Ini juga yang membuat deploy
+          # pertama (volume belum ada) berhasil.
+          echo "== pastikan postgres hidup"
+          docker compose up -d --no-build postgres
+          for _ in $(seq 1 30); do
+            docker compose exec -T postgres pg_isready >/dev/null 2>&1 && break
+            sleep 2
+          done
+
+          echo "== backup sebelum migrasi (BACKUP_DIR=$backup_dir)"
+          BACKUP_DIR="$backup_dir" sh ./backup.sh
 
           echo "== migrasi"
           # Override environment menang atas .env: migrasi memakai image baru
@@ -177,10 +230,12 @@ jobs:
           # tetap jalan, .env tetap seperti sebelumnya.
           MIGRATE_IMAGE="$migrate_image" docker compose run --rm --no-build migrate
 
-          echo "== naikkan api"
+          echo "== naikkan api + situs"
           set_env API_IMAGE "$api_image"
           set_env MIGRATE_IMAGE "$migrate_image"
-          docker compose up -d --no-build api
+          # web & caddy ikut dinaikkan supaya deploy pertama langsung melayani
+          # situs; compose menarik image WEB_IMAGE kalau belum ada di host.
+          docker compose up -d --no-build api web caddy
 
           # Probe HTTP lewat Caddy (busybox wget di image caddy:2-alpine). Kalau
           # wget tidak ada, fallback ke cek port dari host supaya deploy tidak
