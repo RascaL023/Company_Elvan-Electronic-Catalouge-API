@@ -45,7 +45,8 @@ services:
   # eksplisit sebelum api, sesuai ARCHITECTURE §15.
   migrate:
     # Dua cara pakai: `build` untuk lokal (`--build`), `image` untuk VPS
-    # (`pull` dari GHCR, dipakai dengan `--no-build`). `image` diisi
+    # (ditarik dari GHCR lebih dulu; `docker compose run` tidak punya flag
+    # --no-build dan memakai image lokal apa adanya). `image` diisi
     # MIGRATE_IMAGE oleh .github/workflows/deploy.yml.
     image: ${MIGRATE_IMAGE:-elvan-api-migrate:dev}
     build:

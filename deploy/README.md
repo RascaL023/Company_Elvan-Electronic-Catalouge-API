@@ -68,14 +68,17 @@ docker compose build        # menandai image sesuai API_IMAGE/MIGRATE_IMAGE di .
 # atau: docker build -f deploy/Dockerfile --target api -t elvan-api:dev ..
 ```
 
-Di VPS, semua perintah compose memakai `--no-build`: build context (`..`)
-boleh saja tidak ada karena image selalu datang dari registry.
+Di VPS, perintah compose tidak pernah build: `up`/`pull` memakai `--no-build`,
+dan `run` (mis. `migrate`) memang **tidak punya** flag itu — image sudah
+ditarik lebih dulu, jadi compose memakai image lokal. Build context (`..`) boleh
+saja tidak ada karena image selalu datang dari registry.
 
 ## 3. Migrasi (langkah TERPISAH — bukan saat startup API)
 
 ```bash
 docker compose up -d postgres
-docker compose run --rm migrate      # goose up (target `migrate`)
+docker compose pull migrate          # image goose+migrasi dari GHCR
+docker compose run --rm migrate      # goose up (target `migrate`; tanpa --no-build)
 ```
 
 Migrasi selalu dijalankan eksplisit sebelum API naik; binari `api` tidak
@@ -287,7 +290,7 @@ Deploy manual (kalau perlu, tanpa GitHub):
 ```bash
 docker compose pull api migrate
 BACKUP_DIR=./backups sh ./backup.sh
-docker compose run --rm --no-build migrate
+docker compose run --rm migrate        # `run` tidak punya flag --no-build
 docker compose up -d --no-build api
 ```
 

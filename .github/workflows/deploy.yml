@@ -155,6 +155,21 @@ jobs:
             exit 1
           fi
 
+          # Workflow ini berjalan sebagai user SSH (bukan root). Kalau berkas di
+          # direktori ini pernah dibuat lewat `sudo docker`, `sed -i .env` dan
+          # `cp .env .env.bak-*` akan gagal "permission denied" di tengah deploy.
+          # Gagalkan lebih awal dengan perbaikan yang jelas.
+          if ! docker info >/dev/null 2>&1; then
+            echo "docker tidak bisa dipakai oleh $(id -un) tanpa sudo."
+            echo "perbaiki: sudo usermod -aG docker $(id -un)  (lalu login ulang)"
+            exit 1
+          fi
+          if [ ! -w .env ] || [ ! -w . ]; then
+            echo "$dir atau .env tidak writable oleh $(id -un) — kemungkinan dibuat oleh root."
+            echo "perbaiki: sudo chown -R $(id -un):$(id -gn) $dir"
+            exit 1
+          fi
+
           # Deploy FE menulis .env yang sama. Kunci ini membuat keduanya antre
           # (maks 10 menit), bukan saling menimpa sed -i / up -d.
           exec 9>/tmp/elvan-deploy.lock
@@ -193,11 +208,23 @@ jobs:
           # Push ke `deploy-test` memicu ci.yml dan workflow ini bersamaan, jadi
           # image bisa belum ada saat langkah ini jalan: coba ulang sampai
           # ±10 menit sebelum menyerah.
+          #
+          # Kredensial GHCR yang basi di config Docker user (mis. sisa
+          # `sudo docker login`) membuat image PUBLIK pun ditolak "denied".
+          # anon_dir menyediakan config kosong supaya bisa dicoba anonymous
+          # tanpa mengubah config user.
+          anon_dir="$(mktemp -d)"
+          trap 'rm -rf "$anon_dir"' EXIT
+
           pull_retry() {
             tries="$1"
             image="$2"
             for _ in $(seq 1 "$tries"); do
               if docker pull "$image"; then
+                return 0
+              fi
+              if DOCKER_CONFIG="$anon_dir" docker pull "$image" >/dev/null 2>&1; then
+                echo "ditarik anonymous: $image (kredensial GHCR tidak dipakai)"
                 return 0
               fi
               echo "belum tersedia di registry: $image (menunggu build CI)"
@@ -228,13 +255,22 @@ jobs:
           # Override environment menang atas .env: migrasi memakai image baru
           # tanpa mengubah konfigurasi lebih dulu. Gagal di sini = api lama
           # tetap jalan, .env tetap seperti sebelumnya.
-          MIGRATE_IMAGE="$migrate_image" docker compose run --rm --no-build migrate
+          # `run` tidak mengenal --no-build (itu flag `up`); image sudah
+          # ditarik di atas, jadi compose memakai image lokal tanpa build.
+          MIGRATE_IMAGE="$migrate_image" docker compose run --rm migrate
 
           echo "== naikkan api + situs"
+          # web (WEB_IMAGE dari .env) & caddy ikut dinaikkan supaya deploy
+          # pertama langsung melayani situs. Tarik dulu di langkah bernama,
+          # dengan fallback anonymous yang sama seperti image API. Setelah ini
+          # baru .env diketik ulang: kalau pull gagal, .env tetap seperti semula
+          # (API lama tetap jalan dengan tag lamanya).
+          if ! docker compose pull web caddy; then
+            echo "pull web/caddy gagal; coba anonymous"
+            DOCKER_CONFIG="$anon_dir" docker compose pull web caddy
+          fi
           set_env API_IMAGE "$api_image"
           set_env MIGRATE_IMAGE "$migrate_image"
-          # web & caddy ikut dinaikkan supaya deploy pertama langsung melayani
-          # situs; compose menarik image WEB_IMAGE kalau belum ada di host.
           docker compose up -d --no-build api web caddy
 
           # Probe HTTP lewat Caddy (busybox wget di image caddy:2-alpine). Kalau
@@ -266,6 +302,21 @@ jobs:
             rollback
             exit 1
           fi
+
+          # `up -d` tetap exit 0 walau container langsung mati (mis. Caddyfile
+          # tidak valid, port 80 sudah dipakai, atau api menolak start karena
+          # env). Tanpa cek ini, kegagalan baru terlihat di /healthz publik —
+          # jauh dari penyebabnya. Pastikan ketiganya benar-benar running.
+          running="$(docker compose ps --services --filter status=running || true)"
+          for svc in api web caddy; do
+            if ! printf '%s\n' "$running" | grep -qx "$svc"; then
+              echo "$svc tidak running setelah up -d — log terakhir:"
+              docker compose logs --tail 80 "$svc" || true
+              rollback
+              exit 1
+            fi
+          done
+          docker compose ps
 
           echo "api sehat: $api_image"
           REMOTE
