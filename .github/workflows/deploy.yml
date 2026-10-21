@@ -124,13 +124,30 @@ jobs:
           api_image="ghcr.io/$owner/elvan-api:$IMAGE_TAG"
           migrate_image="ghcr.io/$owner/elvan-api-migrate:$IMAGE_TAG"
 
+          # Output langkah ini disimpan supaya bisa diperiksa setelah ssh keluar:
+          # status ssh saja tidak cukup, karena skrip yang terpotong tetap exit 0.
+          deploy_log="$(mktemp)"
+
           ssh -i ~/.ssh/id_ed25519 \
               -o StrictHostKeyChecking=accept-new \
               -o ConnectTimeout=20 \
               -o BatchMode=yes \
               "${VPS_USER}@${VPS_HOST}" \
-              bash -s -- "$api_image" "$migrate_image" "$deploy_dir" "${BACKUP_DIR:-}" <<'REMOTE'
+              bash -s -- "$api_image" "$migrate_image" "$deploy_dir" "${BACKUP_DIR:-}" <<'REMOTE' | tee "$deploy_log"
           set -euo pipefail
+
+          # Semua perintah compose lewat pembungkus ini, yang menutup stdin.
+          #
+          # Skrip ini DIKIRIM LEWAT STDIN (`ssh ... bash -s <<'REMOTE'`), jadi
+          # stdin-nya adalah sisa skrip itu sendiri. `docker compose exec` (dan
+          # `run`) meneruskan stdin ke container — `-T` hanya mematikan TTY,
+          # bukan stdin. Perintah pertama yang memakainya menelan sisa skrip,
+          # bash lalu membaca EOF dan keluar dengan status 0: deploy berhenti
+          # diam-diam setelah `up -d postgres`, langkah ini tetap hijau, port 80
+          # tidak pernah dibuka, dan satu-satunya gejala di runner adalah
+          # `curl: (7) couldn't connect` di langkah terakhir.
+          dc() { docker compose "$@" </dev/null; }
+
           api_image="$1"
           migrate_image="$2"
           dir="$3"
@@ -175,6 +192,51 @@ jobs:
           exec 9>/tmp/elvan-deploy.lock
           flock -w 600 9 || { echo "deploy lain masih berjalan (>10 menit)"; exit 1; }
 
+          # Preflight .env SEBELUM menyentuh container apa pun.
+          #
+          # Tanpa ini, .env yang kurang lengkap baru ketahuan SETENGAH JALAN:
+          # postgres sudah naik, lalu pull/migrate/up berhenti — hasilnya VPS
+          # hanya menjalankan postgres, dan satu-satunya gejala yang terlihat
+          # di runner adalah "curl: (7) couldn't connect" di langkah terakhir,
+          # yang menunjuk ke tempat yang salah.
+          env_get() { sed -n "s/^$1=//p" .env | tail -n1 | tr -d '\"'; }
+
+          missing=""
+          for key in POSTGRES_PASSWORD WEB_IMAGE SITE_ADDRESS SITE_EMAIL; do
+            [ -n "$(env_get "$key")" ] || missing="$missing $key"
+          done
+          if [ -n "$missing" ]; then
+            echo "variabel berikut kosong atau tidak ada di $dir/.env:$missing"
+            echo "isi dulu (bandingkan dengan deploy/.env.example), lalu deploy ulang."
+            exit 1
+          fi
+
+          # Tag `:dev` hanya ada di mesin yang build. Di VPS, `web` harus image
+          # dari registry; tanpa itu `up -d api web caddy` gagal, `web:80` tidak
+          # bisa di-resolve Caddy, dan port 80 tidak pernah terbuka.
+          case "$(env_get WEB_IMAGE)" in
+            *:dev)
+              if ! docker image inspect "$(env_get WEB_IMAGE)" >/dev/null 2>&1; then
+                echo "WEB_IMAGE=$(env_get WEB_IMAGE) adalah tag lokal dan image-nya tidak ada di VPS."
+                echo "deploy VPS butuh image registry (mis. ghcr.io/<owner>/elvan-web:<tag>);"
+                echo "lihat deploy/README.md §7.2. Tanpa image web, Caddy gagal start"
+                echo "sehingga tidak ada yang listen di port 80."
+                exit 1
+              fi
+              ;;
+          esac
+
+          # Kalau ada langkah yang gagal setelah ini, cetak status + log supaya
+          # penyebabnya ada di log Actions, bukan harus digali lewat SSH.
+          on_error() {
+            rc=$?
+            echo "== deploy berhenti (exit $rc) — status container & log terakhir:"
+            dc ps -a || true
+            dc logs --tail 60 api web caddy migrate 2>/dev/null || true
+            exit "$rc"
+          }
+          trap on_error ERR
+
           previous_api="$(grep -E '^API_IMAGE=' .env | cut -d= -f2- || true)"
           [ -n "$backup_dir" ] || backup_dir="$dir/backups"
 
@@ -197,8 +259,8 @@ jobs:
           rollback() {
             echo "rollback: kembalikan .env dari $env_backup"
             cp "$env_backup" .env
-            docker compose pull api || true
-            docker compose up -d --no-build api || true
+            dc pull api || true
+            dc up -d --no-build api || true
           }
 
           echo "== tarik image (sebelumnya: ${previous_api:-<belum ada>})"
@@ -242,14 +304,16 @@ jobs:
           # dijalankan DI DALAM container itu. Ini juga yang membuat deploy
           # pertama (volume belum ada) berhasil.
           echo "== pastikan postgres hidup"
-          docker compose up -d --no-build postgres
+          dc up -d --no-build postgres
           for _ in $(seq 1 30); do
-            docker compose exec -T postgres pg_isready >/dev/null 2>&1 && break
+            dc exec -T postgres pg_isready >/dev/null 2>&1 && break
             sleep 2
           done
 
           echo "== backup sebelum migrasi (BACKUP_DIR=$backup_dir)"
-          BACKUP_DIR="$backup_dir" sh ./backup.sh
+          # backup.sh memanggil compose di dalamnya: stdin-nya juga harus ditutup
+          # dengan alasan yang sama seperti `dc` di atas (lihat komentarnya).
+          BACKUP_DIR="$backup_dir" sh ./backup.sh </dev/null
 
           echo "== migrasi"
           # Override environment menang atas .env: migrasi memakai image baru
@@ -257,7 +321,7 @@ jobs:
           # tetap jalan, .env tetap seperti sebelumnya.
           # `run` tidak mengenal --no-build (itu flag `up`); image sudah
           # ditarik di atas, jadi compose memakai image lokal tanpa build.
-          MIGRATE_IMAGE="$migrate_image" docker compose run --rm migrate
+          MIGRATE_IMAGE="$migrate_image" dc run --rm migrate
 
           echo "== naikkan api + situs"
           # web (WEB_IMAGE dari .env) & caddy ikut dinaikkan supaya deploy
@@ -265,24 +329,91 @@ jobs:
           # dengan fallback anonymous yang sama seperti image API. Setelah ini
           # baru .env diketik ulang: kalau pull gagal, .env tetap seperti semula
           # (API lama tetap jalan dengan tag lamanya).
-          if ! docker compose pull web caddy; then
+          if ! dc pull web caddy; then
             echo "pull web/caddy gagal; coba anonymous"
-            DOCKER_CONFIG="$anon_dir" docker compose pull web caddy
+            DOCKER_CONFIG="$anon_dir" dc pull web caddy
           fi
           set_env API_IMAGE "$api_image"
           set_env MIGRATE_IMAGE "$migrate_image"
-          docker compose up -d --no-build api web caddy
+          dc up -d --no-build api web caddy
+
+          # --- Bukti dari VPS sendiri ---------------------------------
+          # Semua uji di bawah berjalan DI VPS, jadi hasilnya tidak
+          # dipengaruhi tailnet/ACL/DNS: kalau bagian ini lolos, deploy-nya
+          # berhasil. Kegagalan `curl` di runner sesudahnya berarti jalur
+          # jaringan, bukan VPS.
+          site_addr="$(env_get SITE_ADDRESS)"
+          site_host="$(printf '%s' "$site_addr" | sed -E 's#^[a-zA-Z]+://##; s#:[0-9]+$##')"
+          site_port="$(printf '%s' "$site_addr" | sed -nE 's#.*:([0-9]+)$#\1#p')"
+          site_port="${site_port:-80}"
+
+          # Caddy satu-satunya container yang mempublikasikan port situs. Cek
+          # dari HOST: kalau port ini mati, masalahnya di VPS (Caddy gagal
+          # start / upstream web tidak ada) — bukan di runner atau tailnet.
+          port_ok=""
+          for _ in $(seq 1 5); do
+            if (exec 3<>"/dev/tcp/127.0.0.1/$site_port") 2>/dev/null; then
+              port_ok="yes"
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$port_ok" ]; then
+            echo "tidak ada yang listen di 127.0.0.1:$site_port di VPS — Caddy tidak berjalan."
+            dc ps -a || true
+            dc logs --tail 80 caddy || true
+            rollback
+            exit 1
+          fi
+          echo "Caddy listen di 127.0.0.1:$site_port"
+
+          # HTTP lewat Caddy seperti pengunjung. Kode 3xx diterima: untuk situs
+          # ber-domain Caddy mengalihkan HTTP ke HTTPS, dan di titik ini yang
+          # dibuktikan adalah Caddy menerima request lalu merutekannya — bukan
+          # bahwa sertifikat sudah terbit. Tanpa curl di host, langkah ini
+          # dilewati (probe api:8080 di bawah tetap jalan).
+          if command -v curl >/dev/null 2>&1; then
+            http_args=(--max-time 5 -s -o /dev/null -w '%{http_code}')
+            [ -z "$site_host" ] || http_args+=(-H "Host: $site_host")
+            # Caddy butuh beberapa detik pertama setelah start: kode 000 di
+            # percobaan pertama bukan bukti apa pun, jadi beri kesempatan dulu
+            # sebelum melaporkannya (jangan sampai log menakutkan tanpa sebab).
+            code=""
+            for _ in $(seq 1 5); do
+              code="$(curl "${http_args[@]}" "http://127.0.0.1:$site_port/healthz" || true)"
+              if [ "${code:-000}" != "000" ]; then
+                break
+              fi
+              sleep 2
+            done
+            case "${code:-000}" in
+              2??|3??)
+                echo "Caddy menjawab http://127.0.0.1:$site_port/healthz dengan HTTP $code"
+                ;;
+              000)
+                echo "Caddy tidak menjawab di 127.0.0.1:$site_port (koneksi ditolak/terputus)"
+                ;;
+              *)
+                echo "Caddy menjawab /healthz dengan HTTP $code — upstream api tidak sehat:"
+                dc logs --tail 80 caddy api || true
+                rollback
+                exit 1
+                ;;
+            esac
+          else
+            echo "curl tidak ada di VPS — uji HTTP langsung dilewati"
+          fi
 
           # Probe HTTP lewat Caddy (busybox wget di image caddy:2-alpine). Kalau
           # wget tidak ada, fallback ke cek port dari host supaya deploy tidak
           # gagal hanya karena tool di dalam container.
           probe() {
-            if docker compose exec -T caddy sh -c 'command -v wget >/dev/null 2>&1'; then
-              docker compose exec -T caddy wget -qO- http://api:8080/healthz >/dev/null 2>&1
+            if dc exec -T caddy sh -c 'command -v wget >/dev/null 2>&1'; then
+              dc exec -T caddy wget -qO- http://api:8080/healthz >/dev/null 2>&1
               return $?
             fi
             ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-              "$(docker compose ps -q api)" 2>/dev/null || true)"
+              "$(dc ps -q api)" 2>/dev/null || true)"
             [ -n "$ip" ] || return 1
             (exec 3<>"/dev/tcp/$ip/8080") 2>/dev/null
           }
@@ -298,7 +429,7 @@ jobs:
 
           if [ "$health" != "ok" ]; then
             echo "api tidak sehat setelah 60 detik"
-            docker compose logs --tail 100 api || true
+            dc logs --tail 100 api || true
             rollback
             exit 1
           fi
@@ -307,24 +438,116 @@ jobs:
           # tidak valid, port 80 sudah dipakai, atau api menolak start karena
           # env). Tanpa cek ini, kegagalan baru terlihat di /healthz publik —
           # jauh dari penyebabnya. Pastikan ketiganya benar-benar running.
-          running="$(docker compose ps --services --filter status=running || true)"
+          running="$(dc ps --services --filter status=running || true)"
           for svc in api web caddy; do
             if ! printf '%s\n' "$running" | grep -qx "$svc"; then
               echo "$svc tidak running setelah up -d — log terakhir:"
-              docker compose logs --tail 80 "$svc" || true
+              dc logs --tail 80 "$svc" || true
               rollback
               exit 1
             fi
           done
-          docker compose ps
+          dc ps
 
           echo "api sehat: $api_image"
+
+          # Sentinel: satu-satunya bukti bahwa skrip ini sampai ke baris terakhir.
+          # Diperiksa oleh runner setelah ssh selesai; tanpa itu, skrip yang
+          # terpotong (lihat komentar `dc`) tetap dianggap sukses.
+          echo "== deploy selesai"
           REMOTE
 
-      # Dicek dari runner lewat jalur publik yang dipakai pengunjung
-      # (Caddy -> api), bukan hanya dari dalam VPS.
+          # Kalau baris terakhir skrip tidak sampai ke sini, deploy TIDAK selesai
+          # walaupun ssh exit 0 (lihat komentar `dc`). Gagalkan sekarang, jangan
+          # biarkan kegagalan baru muncul sebagai `curl` merah di langkah bawah.
+          if ! grep -qx '== deploy selesai' "$deploy_log"; then
+            echo "---"
+            echo "skrip deploy di VPS berhenti sebelum baris terakhir."
+            echo "Artinya ada perintah di dalamnya yang membaca stdin (skrip ini"
+            echo "dikirim lewat stdin ssh) atau prosesnya terputus. Bungkus"
+            echo "perintah itu dengan </dev/null seperti pembungkus dc() di atas."
+            exit 1
+          fi
+
+      # Kalau langkah di bawah merah padahal VPS sehat (`curl
+      # http://127.0.0.1/healthz` di VPS = ok), penyebabnya ada di jalur runner →
+      # VPS, bukan di aplikasi. Paling sering: ACL tailnet mengizinkan 22 (SSH)
+      # tetapi tidak 80/443. `tailscale ping` sukses dalam kasus itu karena ping
+      # disco tidak melewati filter ACL — makanya TCP diuji terpisah di sini.
+      - name: Diagnosa jalur ke SITE_URL
+        if: vars.VPS_VIA_TAILSCALE != 'false'
+        run: |
+          set -uo pipefail
+          host="$(printf '%s' "${SITE_URL:-}" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*##')"
+          port="$(printf '%s' "${SITE_URL:-}" | sed -nE 's#^[a-zA-Z]+://[^/:]+:([0-9]+).*#\1#p')"
+          port="${port:-80}"
+          echo "target: $host:$port (dari SITE_URL=$SITE_URL)"
+          if [ -z "$host" ]; then
+            echo "SITE_URL kosong — isi repo variable SITE_URL."
+            exit 0
+          fi
+          echo "-- tailscale status"
+          tailscale status || true
+          echo "-- tailscale ping $host (jalur, bukan ACL)"
+          tailscale ping -c 2 "$host" || true
+          echo "-- TCP $host:$port"
+          if timeout 5 bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null; then
+            echo "TCP $host:$port dari runner: OK"
+          else
+            echo "TCP $host:$port dari runner: TIDAK terjangkau."
+            echo "Kalau di VPS 'curl http://127.0.0.1/healthz' = ok, artinya Caddy"
+            echo "sehat dan yang menutup jalur adalah ACL tailnet untuk tag:ci:"
+            echo "izinkan port $port (biasanya 22,80,443) dari tag:ci ke host VPS."
+          fi
+
+      # Uji jalur yang dipakai PENGUNJUNG (bukan SSH/tailnet). Kalau alamat
+      # SITE_URL privat (tailnet/IP LAN), uji ini hanya membuktikan jangkauan
+      # jaringan runner, bukan bahwa situs bisa diakses publik.
       - name: Uji /healthz publik
         run: |
           set -euo pipefail
-          curl -fsS --retry 10 --retry-delay 5 --retry-connrefused "$SITE_URL/healthz"
+          host="$(printf '%s' "$SITE_URL" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*##')"
+          scope="publik"
+          case "$host" in
+            100.*)
+              o2="${host#100.}"; o2="${o2%%.*}"
+              if [ "$o2" -ge 64 ] 2>/dev/null && [ "$o2" -le 127 ]; then
+                scope="tailnet"
+              fi
+              ;;
+            10.*|127.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
+              scope="privat"
+              ;;
+          esac
+
+          echo "probe: $SITE_URL/healthz (alamat $scope)"
+          if [ "$scope" != "publik" ]; then
+            echo "catatan: $host bukan alamat publik, jadi deploy hanya membuktikan"
+            echo "         bahwa runner bisa menjangkau VPS, bukan bahwa pengunjung bisa."
+            echo "         Untuk produksi, SITE_URL harus domain publik (lihat"
+            echo "         deploy/README.md §9.3)."
+          fi
+
+          if ! body="$(curl -fsS --connect-timeout 5 --max-time 10 \
+              --retry 10 --retry-delay 5 --retry-connrefused \
+              "$SITE_URL/healthz" 2>&1)"; then
+            printf '%s\n' "$body"
+            echo "---"
+            echo "curl gagal menjangkau $SITE_URL/healthz."
+            echo "exit 7 (couldn't connect) = tidak ada yang menerima TCP di port itu DARI RUNNER."
+            echo "VPS sudah membuktikan dirinya sendiri di langkah sebelumnya (Caddy listen,"
+            echo "/healthz dijawab lewat Caddy, api/web/caddy running), jadi periksa jalurnya:"
+            if [ "$scope" = "tailnet" ]; then
+              echo "  - ACL tailnet untuk tag:ci belum mengizinkan port SITE_URL"
+              echo "    (22 boleh untuk SSH, 80/443 belum). Ini bukan bug aplikasi."
+              echo "  - atau runner tidak masuk tailnet (VPS_VIA_TAILSCALE=false tanpa jalur lain)"
+              echo "  - solusi jangka panjang: SITE_URL = domain publik (README §9.3)"
+            else
+              echo "  - DNS $host belum menunjuk VPS, atau firewall VPS menutup port-nya"
+              echo "  - SSRF/hairpin NAT: dari dalam VPS, curl ke IP publiknya sendiri bisa gagal"
+            fi
+            echo "Cek dari VPS: curl -fsS http://127.0.0.1/healthz"
+            exit 1
+          fi
+          printf '%s\n' "$body"
           echo "situs merespons: $SITE_URL/healthz"

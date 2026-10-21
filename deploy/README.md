@@ -276,6 +276,42 @@ sebagai user deploy), dan variabel `VPS_HOST`, `VPS_USER`, `VPS_DEPLOY_DIR`,
 `SITE_URL` sudah diisi. Environment `deploy-test` dibuat otomatis saat deploy
 pertama; jangan dipasangi required reviewer kalau ingin tetap otomatis.
 
+**Dua jalur yang berbeda.** Deploy memakai tailnet (SSH, `tag:ci` → `tag:vps`),
+tetapi pengunjung memakai jalur publik (DNS → VPS:80/443, atau Cloudflare
+Tunnel). Keduanya independen: SSH boleh hijau sementara HTTP belum terjangkau.
+Karena itu langkah deploy membuktikan hasilnya **dari VPS sendiri** (Caddy
+listen di port `SITE_ADDRESS`, `/healthz` dijawab lewat Caddy, `api`/`web`/`caddy`
+running). Kalau bagian itu lolos, deploy-nya berhasil dan kegagalan `curl` di
+runner adalah urusan jalur jaringan. Lihat §9.3 untuk memilih jalur masuk.
+
+ACL tailnet hanya perlu mengizinkan port `SITE_URL` kalau `SITE_URL` memang
+alamat tailnet (mis. `http://100.85.60.60`). Kalau `SITE_URL` domain publik,
+cukup port 22:
+
+```jsonc
+// SITE_URL = domain publik (disarankan)
+{ "action": "accept", "src": ["tag:ci"], "dst": ["tag:vps:22"] }
+
+// SITE_URL = alamat tailnet (uji internal saja)
+{ "action": "accept", "src": ["tag:ci"], "dst": ["tag:vps:22,80,443"] }
+```
+
+Kalau ACL hanya mengizinkan 22 sementara `SITE_URL` alamat tailnet, gejalanya
+menyesatkan: SSH sukses, `pull`/`migrate`/`up` sukses, lalu langkah terakhir
+gagal `curl: (7) couldn't connect`. `tailscale ping` tetap hijau karena ping
+disco tidak melewati filter ACL — yang perlu diuji adalah TCP. Langkah
+`Diagnosa jalur ke SITE_URL` mencetak `tailscale status`, `tailscale ping`, dan
+hasil koneksi TCP sebelum health check, supaya beda "VPS sehat" vs "runner
+tidak boleh lewat" langsung terlihat.
+
+Uji dari node tailnet lain (mis. laptop Anda) hanya sah kalau `tailscaled` di
+sana hidup — `100.64.0.0/10` bukan alamat publik, ia rute VPN:
+
+```bash
+sudo tailscaled &                            # tanpa ini, 100.x tidak punya rute
+curl -fsS http://<ip-tailnet-vps>/healthz    # -> ok
+```
+
 Urutan rilis: **BE dulu, FE belakangan**. Kontrak API dijaga *additive*
 (tambah endpoint/field, jangan hapus/rename dalam satu rilis) supaya FE yang
 deploy otomatis tidak menabrak API lama. Untuk perubahan yang memutus
@@ -297,6 +333,99 @@ docker compose up -d --no-build api
 Rollback = tulis tag `sha-` sebelumnya ke `API_IMAGE`/`MIGRATE_IMAGE`, lalu
 `pull` + `up -d --no-build api`. Migrasi yang sudah jalan tidak dibatalkan oleh
 rollback; pulihkan dari dump di `BACKUP_DIR` bila perlu (§8).
+
+### 9.2 Deploy merah: `curl: (7) couldn't connect` di langkah terakhir
+
+Langkah terakhir (`Uji /healthz publik`) menembak `$SITE_URL/healthz` **dari
+runner**, jadi `exit 7` hanya berarti *tidak ada yang menerima TCP di port
+itu*. Itu gejala, bukan sebab — sebabnya selalu di VPS, dan hampir selalu
+berupa rangkaian ini:
+
+| Gejala di VPS (`docker compose ps -a`) | Sebab | Perbaikan |
+|---|---|---|
+| hanya `postgres` yang running **dan langkah `Deploy di VPS` tetap hijau** | skrip deploy terpotong: skrip dikirim lewat stdin (`ssh … bash -s <<'REMOTE'`), lalu `docker compose exec`/`run` meneruskan stdin dan menelan sisa skrip; bash membaca EOF dan keluar 0 | jangan panggil `docker compose` langsung di skrip itu — pakai pembungkus `dc()` (`docker compose "$@" </dev/null`) seperti di `deploy.yml`; sentinel `== deploy selesai` membuat kasus ini merah |
+| hanya `postgres` yang running, langkah deploy merah | deploy berhenti setelah menyiapkan postgres: `backup.sh`, `migrate`, atau `pull web caddy` gagal | lihat log langkah itu; `migrate` gagal biasanya karena `MIGRATE_IMAGE` tidak bisa ditarik |
+| `caddy` restart terus | `SITE_EMAIL` kosong (Caddy menolak baris `email`), `Caddyfile` invalid, atau `web:80` tidak resolve karena container `web` tidak ada | isi `SITE_EMAIL`/`WEB_IMAGE`, lalu `docker compose up -d --no-build api web caddy` |
+| `api` restart terus | config menolak start (mis. `COOKIE_SECURE=false` dengan `APP_ENV=production`, `DATABASE_URL` salah) | `docker compose logs api` menyebut variabel yang salah |
+| semua running, langkah deploy lolos, runner tetap `exit 7` | jalur jaringan dari runner: ACL tailnet menutup port itu, DNS belum menunjuk VPS, atau firewall VPS menutupnya | lihat §9.3; cek juga `curl -fsS http://127.0.0.1/healthz` di VPS |
+
+Alur deploy (perhatikan apa yang sudah hidup saat tiap langkah gagal):
+
+```
+pull api → pull migrate → up postgres → BACKUP → MIGRATE → pull web caddy
+   → set .env → up api web caddy → probe → cek running → barulah curl dari runner
+```
+
+Penyebab paling menyesatkan dari gejala ini adalah skrip yang **berhenti tanpa
+error**: skrip dikirim ke VPS lewat stdin ssh, dan `docker compose exec` (serta
+`run`) meneruskan stdin ke container — `-T` hanya mematikan TTY. Perintah
+pertama yang memakainya, di sini `docker compose exec -T postgres pg_isready`,
+menelan sisa skrip; bash lalu membaca EOF dan keluar dengan status 0. Langkah
+`Deploy di VPS` tetap hijau padahal `backup.sh`, `migrate`, dan `up api web
+caddy` tidak pernah jalan — dan port 80 memang tidak pernah dibuka. Karena itu
+semua compose di skrip itu lewat `dc()`, dan runner memeriksa sentinel
+`== deploy selesai` di akhir output.
+
+Sebelum ini, kegagalan di tengah meninggalkan VPS setengah jadi: postgres hidup,
+tidak ada yang membuka 80, dan workflow hanya melaporkan "couldn't connect" di
+langkah jauh di hilir. `deploy.yml` sekarang (a) mem-validasi `POSTGRES_PASSWORD`,
+`WEB_IMAGE`, `SITE_ADDRESS`, `SITE_EMAIL` **sebelum** container apa pun disentuh,
+(b) mencetak `docker compose ps -a` + log terakhir saat langkah gagal, dan
+(c) mengecek port 80 di host tepat setelah `up`, sehingga pesan errornya menunjuk
+komponen yang benar.
+
+Catatan `SITE_URL`: kalau isinya IP tailnet (`100.64.0.0/10`, mis.
+`http://100.85.60.60`), situs itu hanya terjangkau dari tailnet — runner ikut
+tailnet di langkah pertama, tetapi pengunjung biasa tidak. Untuk situs publik,
+pakai domain yang A/AAAA-nya menunjuk VPS, lalu samakan `SITE_ADDRESS` di `.env`
+dengan domain tersebut (`SITE_ADDRESS=":80"` hanya untuk uji HTTP polos).
+
+### 9.3 Jalur masuk: tailnet untuk deploy, domain publik untuk pengunjung
+
+Ada dua jalur yang sering tertukar, dan sebagian besar kebingungan
+`curl: (7)` berasal dari situ:
+
+| | Dipakai oleh | Alamat | Penentu akses |
+|---|---|---|---|
+| Kontrol | runner CI (`ssh`, `docker compose`) | `VPS_HOST` = `100.x.y.z` / MagicDNS | ACL tailnet (`tag:ci` → `tag:vps:22`) |
+| Data | pengunjung situs | `SITE_URL` = domain publik | DNS + firewall VPS, atau Cloudflare Tunnel |
+
+`100.64.0.0/10` adalah rentang CGNAT milik Tailscale, bukan alamat publik.
+Alamat itu hanya punya rute kalau `tailscaled` hidup di perangkat yang
+memakainya — itu perilaku normal VPN, bukan kerusakan:
+
+- **Laptop Anda**: `tailscaled` mati → tidak ada rute `100.64.0.0/10`, curl
+gagal. Hidupkan → `ok`. Di NixOS, `services.tailscale.enable = true` membuat
+ini otomatis saat boot (jangan jalankan `tailscaled` manual sebagai daemon
+tetap).
+- **Runner GitHub**: `tailscale/github-action` menyalakan `tailscaled` di dalam
+runner, jadi rutenya ada. Yang menentukan port mana yang boleh lewat adalah
+ACL, bukan ping.
+
+Jadi jawaban "apakah GitHub perlu konek ke Tailscale?" — **hanya kalau
+`SITE_URL` berisi alamat tailnet**. Untuk produksi, jawabannya seharusnya tidak:
+`SITE_URL` adalah domain publik, dan uji terakhir menguji jalur yang sama
+dengan pengunjung.
+
+Pilihan jalur masuk:
+
+| Opsi | IP publik | Buka 80/443 | TLS | Catatan |
+|---|---|---|---|---|
+| **A. DNS A/AAAA → VPS**, Caddy ACME | ya, tetap | ya | Caddy otomatis | paling sedikit komponen; `SITE_ADDRESS=<domain>`, `SITE_EMAIL` terisi |
+| **B. Cloudflare Tunnel** (`cloudflared` di VPS, koneksi keluar) | tidak perlu | tidak perlu | di edge Cloudflare | VPS di balik CGNAT/IP dinamis; origin cukup HTTP lokal |
+| C. tailnet saja (kondisi sekarang) | tidak perlu | tidak perlu | Caddy | hanya untuk uji internal — pengunjung tidak bisa membuka situs |
+
+Rekomendasi: **A** kalau VPS punya IP publik tetap, **B** kalau tidak (atau
+kalau tidak ingin membuka port apa pun). Keduanya berakhir sama dari sisi
+workflow: `SITE_URL=https://katalog.example.com`, dan langkah uji terakhir tidak
+lagi menyentuh tailnet sama sekali.
+
+Untuk opsi B, `cloudflared` mengarah ke Caddy di `127.0.0.1:80`, jadi
+pengalihan HTTP→HTTPS Caddy harus dimatikan (TLS sudah di edge): set
+`SITE_ADDRESS=":80"` dan tambahkan `auto_https off` di blok global Caddyfile,
+lalu daftarkan `ingress` tunnel ke `http://localhost:80`. Tanpa itu, Caddy
+membalas 308 ke `https://<domain>` dan Cloudflare meneruskannya kembali ke
+origin — loop.
 
 ## 10. Observabilitas
 
